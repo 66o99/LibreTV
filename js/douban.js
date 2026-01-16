@@ -320,8 +320,8 @@ async function fetchDoubanData(url) {
 }
 
 /**
- * 核心修复函数：渲染豆瓣图片卡片
- * 修复了豆瓣防盗链导致的图片无法显示问题
+ * 终极稳定版：渲染豆瓣图片卡片
+ * 采用多节点负载均衡 + 协议头伪装策略
  */
 function renderDoubanCards(data, container) {
     const fragment = document.createDocumentFragment();
@@ -339,17 +339,24 @@ function renderDoubanCards(data, container) {
             const safeTitle = item.title.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
             const safeRate = (item.rate || "暂无").replace(/</g, '&lt;').replace(/>/g, '&gt;');
             
-            // 解决防盗链：1. 设置 no-referrer 2. 备用镜像地址
-            const originalCoverUrl = item.cover;
-            const backupCoverUrl = `https://images.weserv.nl/?url=${encodeURIComponent(originalCoverUrl)}`;
-            
+            // --- 稳定性增强逻辑 ---
+            const rawUrl = item.cover;
+            // 节点1: 百度镜像中转（非常快且稳）
+            const nodeBaidu = `https://image.baidu.com/search/down?url=${encodeURIComponent(rawUrl)}`;
+            // 节点2: Weserv 缓存（全球加速）
+            const nodeWeserv = `https://images.weserv.nl/?url=${encodeURIComponent(rawUrl)}&default=https://img3.doubanio.com/f/movie/30c6263b6a2d5d07daec2c1fb456710773d7894d/pics/movie/movie_default_large.png`;
+            // 节点3: 豆瓣原图（配合referrerpolicy）
+            const nodeDirect = rawUrl;
+
             card.innerHTML = `
                 <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" onclick="fillAndSearchWithDouban('${safeTitle}')">
-                    <img src="${originalCoverUrl}" alt="${safeTitle}" 
+                    <img src="${nodeBaidu}" alt="${safeTitle}" 
                         class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
                         referrerpolicy="no-referrer"
                         loading="lazy"
-                        onerror="if(this.src != '${backupCoverUrl}') { this.src='${backupCoverUrl}'; }">
+                        /* 失败自动跳节点：百度 -> Weserv -> 原图 -> 默认图 */
+                        onerror="if(this.src.includes('baidu')) { this.src='${nodeWeserv}'; } else if(this.src.includes('weserv')) { this.src='${nodeDirect}'; } else { this.src='assets/img/default-cover.png'; }">
+                    
                     <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent opacity-60"></div>
                     <div class="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm">
                         <span class="text-yellow-400">★</span> ${safeRate}

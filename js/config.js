@@ -2,7 +2,7 @@
 const PROXY_URL = '/proxy/';    // 适用于 Cloudflare, Netlify (带重写), Vercel (带重写)
 // const HOPLAYER_URL = 'https://hoplayer.com/index.html';
 const SEARCH_HISTORY_KEY = 'videoSearchHistory';
-const MAX_HISTORY_ITEMS = 5;
+const MAX_HISTORY_ITEMS = 6;
 
 // 密码保护配置
 // 注意：PASSWORD 环境变量是必需的，所有部署都必须设置密码以确保安全
@@ -14,8 +14,8 @@ const PASSWORD_CONFIG = {
 // 网站信息配置
 const SITE_CONFIG = {
     name: 'LibreTV',
-    url: 'https://libretv.is-an.org',
-    description: '免费在线视频搜索与观看平台',
+    url: 'https://tv.uncle-n.cc',
+    description: 'uncle-N 内部测试平台',
     logo: 'image/logo.png',
     version: '1.0.3'
 };
@@ -23,11 +23,6 @@ const SITE_CONFIG = {
 // API站点配置
 const API_SITES = {
     
-//        dyttzy: {
-//        api: 'http://caiji.dyttzyapi.com/api.php/provide/vod',
-//        name: '电影天堂资源',
-//        detail: 'http://caiji.dyttzyapi.com', 
-//    },
     ruyi: {
         api: 'https://cj.rycjapi.com/api.php/provide/vod',
         name: '如意资源',

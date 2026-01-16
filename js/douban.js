@@ -1,4 +1,4 @@
-// 豆瓣热门电影电视剧推荐功能（已集成图片401/418修复）
+// 豆瓣热门电影电视剧推荐功能
 
 // 豆瓣标签列表 - 修改为默认标签
 let defaultMovieTags = ['热门', '最新', '经典', '豆瓣高分', '冷门佳片', '华语', '欧美', '韩国', '日本', '动作', '喜剧', '日综', '爱情', '科幻', '悬疑', '恐怖', '治愈'];
@@ -323,13 +323,6 @@ function renderDoubanTags(tags) {
     // 确定当前应该使用的标签列表
     const currentTags = doubanMovieTvCurrentSwitch === 'movie' ? movieTags : tvTags;
     
-    // 优化：标签容器样式，防止标签过多错乱
-    tagContainer.style.display = 'flex';
-    tagContainer.style.flexWrap = 'wrap';
-    tagContainer.style.gap = '8px';
-    tagContainer.style.overflowX = 'auto';
-    tagContainer.style.padding = '4px 0';
-    
     // 清空标签容器
     tagContainer.innerHTML = '';
 
@@ -448,7 +441,6 @@ function renderRecommend(tag, pageLimit, pageStart) {
         });
 }
 
-// 【修复点1：加固API请求，防止401拦截】
 async function fetchDoubanData(url) {
     // 添加超时控制
     const controller = new AbortController();
@@ -461,12 +453,7 @@ async function fetchDoubanData(url) {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
             'Referer': 'https://movie.douban.com/',
             'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8', // 新增：模拟浏览器语言
-            'Cache-Control': 'no-cache', // 新增：防止缓存导致的旧数据
-            'Pragma': 'no-cache'
-        },
-        credentials: 'omit', // 关键：不发送Cookie，避免豆瓣Cookie校验拦截
-        mode: 'cors'
+        }
     };
 
     try {
@@ -512,7 +499,7 @@ async function fetchDoubanData(url) {
     }
 }
 
-// 【修复点2：核心图片修复，解决401/418反爬拦截】
+// 抽取渲染豆瓣卡片的逻辑到单独函数
 function renderDoubanCards(data, container) {
     // 创建文档片段以提高性能
     const fragment = document.createDocumentFragment();
@@ -541,24 +528,20 @@ function renderDoubanCards(data, container) {
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;');
             
-            // 核心修复：使用图片代理服务绕过豆瓣反爬
+            // 处理图片URL
+            // 1. 直接使用豆瓣图片URL (添加no-referrer属性)
             const originalCoverUrl = item.cover;
-            // 主代理：解决防盗链+反爬，自动压缩图片尺寸
-            const proxyImgUrl = `https://images.weserv.nl/?url=${encodeURIComponent(originalCoverUrl)}&w=200&h=300`;
-            // 备用代理：防止主代理失效
-            const backupProxyImg = `https://proxy.calibur.tv/thumbnail/${encodeURIComponent(originalCoverUrl)}`;
-            // 兜底占位图：防止所有代理失效
-            const placeholderImg = 'https://cdn.jsdelivr.net/npm/placeholder.com/200x300?text=图片加载失败';
-
+            
+            // 2. 也准备代理URL作为备选
+            const proxiedCoverUrl = PROXY_URL + encodeURIComponent(originalCoverUrl);
+            
             // 为不同设备优化卡片布局
             card.innerHTML = `
                 <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" onclick="fillAndSearchWithDouban('${safeTitle}')">
-                    <img src="${proxyImgUrl}" alt="${safeTitle}" 
+                    <img src="${originalCoverUrl}" alt="${safeTitle}" 
                         class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
-                        onerror="this.onerror=null;this.src='${backupProxyImg}';if(this.error)this.src='${placeholderImg}';this.classList.add('object-contain')"
-                        loading="lazy" 
-                        referrerpolicy="no-referrer" 
-                        crossorigin="anonymous">
+                        onerror="this.onerror=null; this.src='${proxiedCoverUrl}'; this.classList.add('object-contain');"
+                        loading="lazy" referrerpolicy="no-referrer">
                     <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent opacity-60"></div>
                     <div class="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm">
                         <span class="text-yellow-400">★</span> ${safeRate}

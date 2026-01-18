@@ -49,6 +49,20 @@ const API_SITES = {
         name: '黑木耳',
         detail: 'https://heimuer.tv', 
     },
+    
+//    qiqiziyuan: {
+//        api: 'https://www.qiqidys.com/api.php/provide/vod',
+//        name: '七七资源',
+//    },
+//    heimuer: {
+//        api: 'https://cj.lziapi.com/api.php/provide/vod',
+//        name: '影视工厂',
+//    },
+//    heimuer: {
+//        api: 'https://www.fantuan.tv/api.php/provide/vod',
+//        name: '饭团影视',
+//    },
+    
     zy360: {
         api: 'https://360zy.com/api.php/provide/vod',
         name: '360资源',

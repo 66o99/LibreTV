@@ -1,71 +1,59 @@
-// 1. 确保基础变量存在，防止代码崩溃
-if (typeof PROXY_URL === 'undefined') var PROXY_URL = "https://api.allorigins.win/raw?url=";
-
-// 2. 强力数据获取函数
-async function fetchDoubanData(url) {
-    try {
-        // 优先使用 allorigins 代理
-        const response = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`);
-        const data = await response.json();
-        // allorigins 返回的是字符串，需要解析
-        return JSON.parse(data.contents);
-    } catch (err) {
-        console.error("豆瓣请求失败:", err);
-        return null;
-    }
-}
-
-// 3. 稳健渲染函数（移除所有复杂逻辑）
+// 修复后的渲染豆瓣卡片逻辑
 function renderDoubanCards(data, container) {
-    if (!data || !data.subjects || data.subjects.length === 0) {
-        container.innerHTML = '<div class="col-span-full text-center py-10 text-gray-400">未能加载到内容，请检查网络或稍后再试</div>';
-        return;
-    }
+    const fragment = document.createDocumentFragment();
+    
+    if (!data.subjects || data.subjects.length === 0) {
+        const emptyEl = document.createElement("div");
+        emptyEl.className = "col-span-full text-center py-8";
+        emptyEl.innerHTML = `<div class="text-pink-500">❌ 暂无数据，请尝试其他分类或刷新</div>`;
+        fragment.appendChild(emptyEl);
+    } else {
+        data.subjects.forEach(item => {
+            const card = document.createElement("div");
+            card.className = "bg-[#111] hover:bg-[#222] transition-all duration-300 rounded-lg overflow-hidden flex flex-col transform hover:scale-105 shadow-md hover:shadow-lg";
+            
+            const safeTitle = item.title.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            const safeRate = (item.rate || "暂无").replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            
+            // 解决海报显示问题的核心：
+            // 使用特定的 doubanio 替换，有时能绕过基础限制
+            let imgUrl = item.cover;
+            if (imgUrl.includes('doubanio.com')) {
+                imgUrl = imgUrl.replace('img3.doubanio.com', 'img1.doubanio.com'); // 尝试切换节点
+            }
 
-    let html = '';
-    data.subjects.forEach(item => {
-        const title = item.title.replace(/"/g, '&quot;');
-        const rate = item.rate || '0.0';
-        
-        // 关键：使用无需 Referer 的百度镜像或 Weserv 代理图片
-        // 百度镜像：https://image.baidu.com/search/down?url=
-        // Weserv：https://images.weserv.nl/?url=
-        const cover = `https://images.weserv.nl/?url=${encodeURIComponent(item.cover)}&w=300`;
-
-        html += `
-            <div class="bg-[#1a1a1a] rounded-lg overflow-hidden flex flex-col border border-white/5 shadow-lg">
-                <div class="relative w-full aspect-[2/3] cursor-pointer" onclick="if(typeof fillAndSearchWithDouban === 'function') fillAndSearchWithDouban('${title}')">
-                    <img src="${cover}" 
-                         alt="${title}" 
-                         class="w-full h-full object-cover"
-                         referrerpolicy="no-referrer"
-                         onerror="this.src='https://img3.doubanio.com/f/movie/30c6263b6a2d5d07daec2c1fb456710773d7894d/pics/movie/movie_default_large.png'">
-                    <div class="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent"></div>
-                    <div class="absolute bottom-2 left-2 bg-pink-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
-                        ★ ${rate}
+            // 备用图片代理（请确保 PROXY_URL 已定义）
+            const backupUrl = typeof PROXY_URL !== 'undefined' ? PROXY_URL + encodeURIComponent(item.cover) : '';
+            
+            card.innerHTML = `
+                <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" onclick="fillAndSearchWithDouban('${safeTitle}')">
+                    <img src="${imgUrl}" 
+                        alt="${safeTitle}" 
+                        class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
+                        loading="lazy" 
+                        referrerpolicy="no-referrer"
+                        onerror="if(!this.dataset.tried){this.dataset.tried=true; this.src='${backupUrl}';}else{this.src='https://img9.doubanio.com/f/movie/30c6269b302d51d70ed951336496924b10b037ba/pics/movie/movie_default_large.png';this.onerror=null;}"
+                    >
+                    <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent opacity-60"></div>
+                    <div class="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm">
+                        <span class="text-yellow-400">★</span> ${safeRate}
+                    </div>
+                    <div class="absolute bottom-2 right-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm hover:bg-[#333] transition-colors">
+                        <a href="${item.url}" target="_blank" rel="noopener noreferrer" title="在豆瓣查看" onclick="event.stopPropagation();">🔗</a>
                     </div>
                 </div>
-                <div class="p-2 text-center">
-                    <div class="text-xs font-medium text-gray-200 truncate w-full">${title}</div>
+                <div class="p-2 text-center bg-[#111]">
+                    <button onclick="fillAndSearchWithDouban('${safeTitle}')" 
+                            class="text-sm font-medium text-white truncate w-full hover:text-pink-400 transition"
+                            title="${safeTitle}">
+                        ${safeTitle}
+                    </button>
                 </div>
-            </div>
-        `;
-    });
-    container.innerHTML = html;
-}
-
-// 4. 入口函数：强制清空状态并显示文字
-function renderRecommend(tag, pageLimit, pageStart) {
-    const container = document.getElementById("douban-results");
-    if (!container) return;
-
-    // 先显示文字，确保你看到“加载中”说明 JS 还在跑
-    container.innerHTML = '<div class="col-span-full text-center py-20 text-pink-500">正在获取豆瓣推荐...</div>';
+            `;
+            fragment.appendChild(card);
+        });
+    }
     
-    const type = (typeof doubanMovieTvCurrentSwitch !== 'undefined') ? doubanMovieTvCurrentSwitch : 'movie';
-    const target = `https://movie.douban.com/j/search_subjects?type=${type}&tag=${encodeURIComponent(tag)}&sort=recommend&page_limit=${pageLimit}&page_start=${pageStart}`;
-    
-    fetchDoubanData(target).then(data => {
-        renderDoubanCards(data, container);
-    });
+    container.innerHTML = "";
+    container.appendChild(fragment);
 }

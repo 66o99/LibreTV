@@ -13,19 +13,19 @@ function renderDoubanCards(data, container) {
             
             const safeTitle = item.title.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
             const safeRate = (item.rate || "暂无").replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            
-            // --- 稳定性增强逻辑 ---
-            const rawUrl = item.cover;
-            // 节点1: 百度镜像中转（非常快且稳）
-            const nodeBaidu = `https://image.baidu.com/search/down?url=${encodeURIComponent(rawUrl)}`;
-            // 节点2: Weserv 缓存（全球加速）
-            const nodeWeserv = `https://images.weserv.nl/?url=${encodeURIComponent(rawUrl)}&default=https://img3.doubanio.com/f/movie/30c6263b6a2d5d07daec2c1fb456710773d7894d/pics/movie/movie_default_large.png`;
-            // 节点3: 豆瓣原图（配合referrerpolicy）
-            const nodeDirect = rawUrl;
+
+            // ✅ 终极修复：直接使用豆瓣原图 + 强制无防盗链模式
+            let img = item.cover || "";
+            img = img.replace("img3.", "img9.").replace("img1.", "img2.");
 
             card.innerHTML = `
                 <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" onclick="fillAndSearchWithDouban('${safeTitle}')">
-                    <img src="https://qpic.top/api/img?url=${encodeURIComponent(item.cover)}" alt="${safeTitle}" class="w-full h-full object-cover transition-transform duration-500 hover:scale-110" referrerpolicy="no-referrer" loading="lazy" onerror="this.src='https://via.placeholder.com/180x270?text=No+Image'">
+                    <img src="${img}" alt="${safeTitle}" 
+                         style="background:#222; min-height:100px"
+                         class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
+                         referrerpolicy="no-referrer"
+                         crossorigin="anonymous"
+                         loading="lazy">
                     
                     <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent opacity-60"></div>
                     <div class="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm">

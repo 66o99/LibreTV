@@ -339,23 +339,21 @@ function renderDoubanCards(data, container) {
             const safeTitle = item.title.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
             const safeRate = (item.rate || "暂无").replace(/</g, '&lt;').replace(/>/g, '&gt;');
             
-            // --- 稳定性增强逻辑 ---
+            // 🔥 修复：最新稳定图片节点（长期可用）
             const rawUrl = item.cover;
-            // 节点1: 百度镜像中转（非常快且稳）
-            const nodeBaidu = `https://image.baidu.com/search/down?url=${encodeURIComponent(rawUrl)}`;
-            // 节点2: Weserv 缓存（全球加速）
-            const nodeWeserv = `https://images.weserv.nl/?url=${encodeURIComponent(rawUrl)}&default=https://img3.doubanio.com/f/movie/30c6263b6a2d5d07daec2c1fb456710773d7894d/pics/movie/movie_default_large.png`;
-            // 节点3: 豆瓣原图（配合referrerpolicy）
             const nodeDirect = rawUrl;
+            const nodeProxy1 = `https://cdn.statically.io/img/${rawUrl.replace('https://', '')}`;
+            const defaultCover = 'assets/img/default-cover.png';
 
             card.innerHTML = `
                 <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" onclick="fillAndSearchWithDouban('${safeTitle}')">
-                    <img src="${nodeBaidu}" alt="${safeTitle}" 
+                    <img src="${nodeDirect}" alt="${safeTitle}" 
                         class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
                         referrerpolicy="no-referrer"
+                        crossorigin="anonymous"
                         loading="lazy"
-                        /* 失败自动跳节点：百度 -> Weserv -> 原图 -> 默认图 */
-                        onerror="if(this.src.includes('baidu')) { this.src='${nodeWeserv}'; } else if(this.src.includes('weserv')) { this.src='${nodeDirect}'; } else { this.src='assets/img/default-cover.png'; }">
+                        onerror="this.onerror=null; this.src='${nodeProxy1}';"
+                        onabort="this.src='${defaultCover}';">
                     
                     <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent opacity-60"></div>
                     <div class="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm">
@@ -379,8 +377,91 @@ function renderDoubanCards(data, container) {
     container.appendChild(fragment);
 }
 
-// 标签管理、重置等其余函数保持不变...
+// 标签管理弹窗
+function showTagManageModal() {
+    const modal = document.createElement('div');
+    modal.className = 'fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4';
+    modal.id = 'tagManageModal';
+    
+    const currentTags = doubanMovieTvCurrentSwitch === 'movie' ? movieTags : tvTags;
+    const typeText = doubanMovieTvCurrentSwitch === 'movie' ? '电影' : '电视剧';
+    
+    modal.innerHTML = `
+        <div class="bg-[#111] rounded-xl w-full max-w-md border border-gray-700 shadow-2xl">
+            <div class="p-4 border-b border-gray-700 flex justify-between items-center">
+                <h3 class="text-lg font-bold text-white">管理${typeText}标签</h3>
+                <button onclick="closeTagManageModal()" class="text-gray-400 hover:text-white text-xl">&times;</button>
+            </div>
+            <div class="p-4 max-h-96 overflow-y-auto">
+                <div class="mb-4">
+                    <input id="newTagInput" placeholder="输入新标签名称" class="w-full p-2 rounded bg-[#222] border border-gray-600 text-white mb-2">
+                    <button onclick="addTag()" class="w-full bg-pink-600 text-white p-2 rounded hover:bg-pink-700 transition">添加标签</button>
+                </div>
+                <div class="grid grid-cols-3 gap-2" id="currentTagsList">
+                    ${currentTags.map(tag => `
+                        <div class="bg-[#222] rounded p-2 flex justify-between items-center">
+                            <span class="text-white text-sm truncate">${tag}</span>
+                            <button onclick="deleteTag('${tag}')" class="text-red-400 hover:text-red-300 text-xs">&times;</button>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+            <div class="p-4 border-t border-gray-700 flex justify-between">
+                <button onclick="resetTagsToDefault()" class="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-500 transition">重置默认</button>
+                <button onclick="closeTagManageModal()" class="bg-pink-600 text-white px-4 py-2 rounded hover:bg-pink-700 transition">完成</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+function closeTagManageModal() {
+    const modal = document.getElementById('tagManageModal');
+    if (modal) modal.remove();
+}
+
+function addTag() {
+    const input = document.getElementById('newTagInput');
+    const tag = input.value.trim();
+    if (!tag) return;
+    
+    const currentList = doubanMovieTvCurrentSwitch === 'movie' ? movieTags : tvTags;
+    if (!currentList.includes(tag)) {
+        currentList.push(tag);
+        saveUserTags();
+        renderDoubanTags();
+        showTagManageModal();
+    }
+    input.value = '';
+}
+
+function deleteTag(tag) {
+    if (tag === '热门') {
+        showToast('【热门】标签不能删除', 'error');
+        return;
+    }
+    
+    const currentList = doubanMovieTvCurrentSwitch === 'movie' ? movieTags : tvTags;
+    const index = currentList.indexOf(tag);
+    if (index > -1) {
+        currentList.splice(index, 1);
+        saveUserTags();
+        renderDoubanTags();
+        showTagManageModal();
+    }
+}
+
+function resetTagsToDefault() {
+    if (doubanMovieTvCurrentSwitch === 'movie') {
+        movieTags = [...defaultMovieTags];
+    } else {
+        tvTags = [...defaultTvTags];
+    }
+    saveUserTags();
+    renderDoubanTags();
+    closeTagManageModal();
+    showToast('已重置为默认标签', 'success');
+}
+
 function resetToHome() { resetSearchArea(); updateDoubanVisibility(); }
 document.addEventListener('DOMContentLoaded', initDouban);
-
-// [此处可以继续保留你原来的 showTagManageModal, addTag, deleteTag, resetTagsToDefault 函数代码...]

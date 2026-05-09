@@ -1,59 +1,92 @@
+// 1. 核心请求处理：增加变量检查和备用接口
+async function fetchDoubanData(url) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    
+    // 自动补全可能缺失的 PROXY_URL
+    const currentProxy = (typeof PROXY_URL !== 'undefined') ? PROXY_URL : 'https://api.allorigins.win/get?url=';
+
+    try {
+        const fullUrl = currentProxy.includes('allorigins') ? 
+            currentProxy + encodeURIComponent(url) : 
+            currentProxy + encodeURIComponent(url);
+            
+        const response = await fetch(fullUrl, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        
+        const data = await response.json();
+        // 处理 allorigins 这种代理返回的特殊格式
+        return data.contents ? JSON.parse(data.contents) : data;
+    } catch (err) {
+        console.error("代理请求失败，尝试备用线路:", err);
+        // 最后的倔强：尝试直接请求（大概率跨域，但万一呢）
+        const fallback = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`);
+        const json = await fallback.json();
+        return JSON.parse(json.contents);
+    }
+}
+
+// 2. 推荐渲染：增加防御性代码
+function renderRecommend(tag, pageLimit, pageStart) {
+    const container = document.getElementById("douban-results");
+    if (!container) return;
+
+    // 清除旧内容并显示加载中
+    container.innerHTML = `<div class="col-span-full text-center py-8 text-pink-500 animate-pulse">📡 正在调取豆瓣数据...</div>`;
+    
+    const target = `https://movie.douban.com/j/search_subjects?type=${doubanMovieTvCurrentSwitch}&tag=${encodeURIComponent(tag)}&sort=recommend&page_limit=${pageLimit}&page_start=${pageStart}`;
+    
+    fetchDoubanData(target)
+        .then(data => {
+            if (data) {
+                renderDoubanCards(data, container);
+            } else {
+                throw new Error("Data is empty");
+            }
+        })
+        .catch(error => {
+            console.error("渲染失败：", error);
+            container.innerHTML = `<div class="col-span-full text-center py-8 text-red-500">❌ 数据加载失败，请检查网络或代理设置</div>`;
+        });
+}
+
+// 3. 终极渲染卡片：完全隔离 Referrer
 function renderDoubanCards(data, container) {
     if (!container) return;
-    container.innerHTML = ""; // 先清空容器
-
-    // 容错处理：确保 data 和 subjects 存在
-    if (!data || !data.subjects || data.subjects.length === 0) {
-        container.innerHTML = `<div class="col-span-full text-center py-8"><div class="text-pink-500">❌ 暂无数据，请尝试其他分类或刷新</div></div>`;
+    
+    const subjects = data.subjects || [];
+    if (subjects.length === 0) {
+        container.innerHTML = `<div class="col-span-full text-center py-8 text-gray-400">暂无相关资源</div>`;
         return;
     }
 
-    const fragment = document.createDocumentFragment();
-    
-    data.subjects.forEach(item => {
-        const card = document.createElement("div");
-        card.className = "bg-[#111] hover:bg-[#222] transition-all duration-300 rounded-lg overflow-hidden flex flex-col transform hover:scale-105 shadow-md hover:shadow-lg";
-        
-        // 安全处理字符串
-        const safeTitle = (item.title || "未知名称").replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const safeRate = (item.rate || "0.0");
-        const rawUrl = item.cover || "";
+    const html = subjects.map(item => {
+        const safeTitle = item.title.replace(/"/g, '&quot;');
+        const safeRate = item.rate || '0.0';
+        // 重点：使用 images.weserv.nl 加上 &p=0 处理防盗链
+        const imgUrl = `https://images.weserv.nl/?url=${encodeURIComponent(item.cover)}&w=200&h=300&fit=cover`;
 
-        // --- 图片中转策略 ---
-        // 方案 A: images.weserv.nl (目前最强，带上 &n=-1 关闭缓存检查)
-        const nodeWeserv = `https://images.weserv.nl/?url=${encodeURIComponent(rawUrl)}`;
-        // 方案 B: 百度镜像
-        const nodeBaidu = `https://image.baidu.com/search/down?url=${encodeURIComponent(rawUrl)}`;
-
-        card.innerHTML = `
-            <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" onclick="if(typeof fillAndSearchWithDouban === 'function') fillAndSearchWithDouban('${safeTitle}')">
-                <img src="${nodeWeserv}" 
-                    alt="${safeTitle}" 
-                    class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
-                    referrerpolicy="no-referrer"
-                    onerror="this.onerror=null; this.src='${nodeBaidu}'; this.parentElement.innerHTML += '<div class=\"absolute inset-0 flex items-center justify-center bg-gray-900 text-xs text-gray-500\">图片加载中...</div>'">
-                
-                <div class="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent"></div>
-                <div class="absolute bottom-2 left-2 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded-sm">
-                    <span class="text-yellow-400">★</span> ${safeRate}
+        return `
+            <div class="bg-[#111] rounded-lg overflow-hidden flex flex-col shadow-md border border-gray-800">
+                <div class="relative aspect-[2/3] cursor-pointer group" onclick="if(window.fillAndSearchWithDouban) fillAndSearchWithDouban('${safeTitle}')">
+                    <img src="${imgUrl}" 
+                         alt="${safeTitle}" 
+                         referrerpolicy="no-referrer"
+                         class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                         onerror="this.src='https://img3.doubanio.com/f/movie/30c6263b6a2d5d07daec2c1fb456710773d7894d/pics/movie/movie_default_large.png'">
+                    <div class="absolute bottom-0 left-0 right-0 p-2 bg-gradient-to-t from-black text-[10px]">
+                        <span class="text-yellow-500">★ ${safeRate}</span>
+                    </div>
                 </div>
-                <div class="absolute bottom-2 right-2 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded-sm">
-                    <a href="${item.url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();">豆瓣</a>
+                <div class="p-2 text-center">
+                    <div class="text-xs text-gray-200 truncate cursor-pointer hover:text-pink-500" 
+                         onclick="if(window.fillAndSearchWithDouban) fillAndSearchWithDouban('${safeTitle}')">
+                        ${item.title}
+                    </div>
                 </div>
-            </div>
-            <div class="p-2 text-center bg-[#111]">
-                <button onclick="if(typeof fillAndSearchWithDouban === 'function') fillAndSearchWithDouban('${safeTitle}')" 
-                        class="text-sm font-medium text-white truncate w-full hover:text-pink-400 transition">
-                    ${safeTitle}
-                </button>
             </div>
         `;
-        fragment.appendChild(card);
-    });
+    }).join('');
 
-    container.appendChild(fragment);
-    
-    // 移除加载遮罩（如果有的话）
-    const loading = container.querySelector('.absolute.inset-0.bg-black/80');
-    if (loading) loading.remove();
+    container.innerHTML = html;
 }

@@ -531,7 +531,7 @@ function getDoubanSubjectUrl(type, tag, pageLimit, pageStart) {
     return `${DOUBAN_API_BASE}/j/search_subjects?${params.toString()}`;
 }
 
-async function getDoubanImageNodes(url) {
+function getDoubanImageNodes(url) {
     if (!url) {
         return {
             primary: DOUBAN_DEFAULT_COVER,
@@ -542,24 +542,14 @@ async function getDoubanImageNodes(url) {
 
     const normalizedUrl = url.replace(/\\/g, '');
     const baiduUrl = `https://image.baidu.com/search/down?url=${encodeURIComponent(normalizedUrl)}`;
-
-    if (typeof PROXY_URL !== 'undefined' && PROXY_URL) {
-        const proxyUrl = PROXY_URL + encodeURIComponent(normalizedUrl);
-        const authenticatedProxyUrl = typeof window.ProxyAuth?.addAuthToProxyUrl === 'function' ?
-            await window.ProxyAuth.addAuthToProxyUrl(proxyUrl) :
-            proxyUrl;
-
-        return {
-            primary: authenticatedProxyUrl,
-            fallback: baiduUrl,
-            finalFallback: normalizedUrl
-        };
-    }
+    const proxiedUrl = typeof PROXY_URL !== 'undefined' && PROXY_URL ?
+        PROXY_URL + encodeURIComponent(normalizedUrl) :
+        baiduUrl;
 
     return {
-        primary: baiduUrl,
-        fallback: normalizedUrl,
-        finalFallback: DOUBAN_DEFAULT_COVER
+        primary: proxiedUrl,
+        fallback: baiduUrl,
+        finalFallback: normalizedUrl
     };
 }
 
@@ -585,7 +575,7 @@ function handleDoubanImageError(img) {
 }
 
 
-async function renderDoubanCards(data, container) {
+function renderDoubanCards(data, container) {
     // 创建文档片段以提高性能
     const fragment = document.createDocumentFragment();
     
@@ -618,7 +608,7 @@ async function renderDoubanCards(data, container) {
             const originalCoverUrl = item.cover;
             
             // 2. 也准备代理URL作为备选
-            const imageNodes = await getDoubanImageNodes(originalCoverUrl);
+            const imageNodes = getDoubanImageNodes(originalCoverUrl);
             
             // 为不同设备优化卡片布局
             card.innerHTML = `

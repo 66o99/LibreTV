@@ -493,9 +493,11 @@ async function buildDoubanRequestUrls(url) {
         }
     }
 
-    urls.push(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
-    urls.push(`https://corsproxy.io/?${encodeURIComponent(url)}`);
-    urls.push(url);
+    if (urls.length === 0) {
+        urls.push(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
+        urls.push(`https://corsproxy.io/?${encodeURIComponent(url)}`);
+        urls.push(url);
+    }
 
     return [...new Set(urls)];
 }

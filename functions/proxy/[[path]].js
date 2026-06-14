@@ -1,871 +1,593 @@
-// 豆瓣热门电影电视剧推荐功能
+// functions/proxy/[[path]].js
 
-// 豆瓣标签列表 - 修改为默认标签
-let defaultMovieTags = ['热门', '最新', '经典', '豆瓣高分', '冷门佳片', '华语', '欧美', '韩国', '日本', '动作', '喜剧', '日综', '爱情', '科幻', '悬疑', '恐怖', '治愈'];
-let defaultTvTags = ['热门', '美剧', '英剧', '韩剧', '日剧', '国产剧', '港剧', '日本动画', '综艺', '纪录片'];
+// --- 配置 (现在从 Cloudflare 环境变量读取) ---
+// 在 Cloudflare Pages 设置 -> 函数 -> 环境变量绑定 中设置以下变量:
+// CACHE_TTL (例如 86400)
+// MAX_RECURSION (例如 5)
+// FILTER_DISCONTINUITY (不再需要，设为 false 或移除)
+// USER_AGENTS_JSON (例如 ["UA1", "UA2"]) - JSON 字符串数组
+// DEBUG (例如 false 或 true)
+// PASSWORD (例如 "your_password") - 鉴权密码
+// --- 配置结束 ---
 
-// 用户标签列表 - 存储用户实际使用的标签（包含保留的系统标签和用户添加的自定义标签）
-let movieTags = [];
-let tvTags = [];
+// --- 常量 (之前在 config.js 中，现在移到这里，因为它们与代理逻辑相关) ---
+const MEDIA_FILE_EXTENSIONS = [
+    '.mp4', '.webm', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.f4v', '.m4v', '.3gp', '.3g2', '.ts', '.mts', '.m2ts',
+    '.mp3', '.wav', '.ogg', '.aac', '.m4a', '.flac', '.wma', '.alac', '.aiff', '.opus',
+    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.svg', '.avif', '.heic'
+];
+const MEDIA_CONTENT_TYPES = ['video/', 'audio/', 'image/'];
+// --- 常量结束 ---
 
-// 加载用户标签
-function loadUserTags() {
+
+/**
+ * 主要的 Pages Function 处理函数
+ * 拦截发往 /proxy/* 的请求
+ */
+export async function onRequest(context) {
+    const { request, env, next, waitUntil } = context; // next 和 waitUntil 可能需要
+    const url = new URL(request.url);
+
+    // 验证鉴权（主函数调用）
+    const isValidAuth = await validateAuth(request, env);
+    if (!isValidAuth) {
+        return new Response(JSON.stringify({
+            success: false,
+            error: '代理访问未授权：请检查密码配置或鉴权参数'
+        }), { 
+            status: 401,
+            headers: {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+                'Access-Control-Allow-Headers': '*',
+                'Content-Type': 'application/json'
+            }
+        });
+    }
+
+    // --- 从环境变量读取配置 ---
+    const DEBUG_ENABLED = (env.DEBUG === 'true');
+    const CACHE_TTL = parseInt(env.CACHE_TTL || '86400'); // 默认 24 小时
+    const MAX_RECURSION = parseInt(env.MAX_RECURSION || '5'); // 默认 5 层
+    // 广告过滤已移至播放器处理，代理不再执行
+    let USER_AGENTS = [ // 提供一个基础的默认值
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    ];
     try {
-        // 尝试从本地存储加载用户保存的标签
-        const savedMovieTags = localStorage.getItem('userMovieTags');
-        const savedTvTags = localStorage.getItem('userTvTags');
-        
-        // 如果本地存储中有标签数据，则使用它
-        if (savedMovieTags) {
-            movieTags = JSON.parse(savedMovieTags);
-        } else {
-            // 否则使用默认标签
-            movieTags = [...defaultMovieTags];
-        }
-        
-        if (savedTvTags) {
-            tvTags = JSON.parse(savedTvTags);
-        } else {
-            // 否则使用默认标签
-            tvTags = [...defaultTvTags];
+        // 尝试从环境变量解析 USER_AGENTS_JSON
+        const agentsJson = env.USER_AGENTS_JSON;
+        if (agentsJson) {
+            const parsedAgents = JSON.parse(agentsJson);
+            if (Array.isArray(parsedAgents) && parsedAgents.length > 0) {
+                USER_AGENTS = parsedAgents;
+            } else {
+                 logDebug("环境变量 USER_AGENTS_JSON 格式无效或为空，使用默认值");
+            }
         }
     } catch (e) {
-        console.error('加载标签失败：', e);
-        // 初始化为默认值，防止错误
-        movieTags = [...defaultMovieTags];
-        tvTags = [...defaultTvTags];
+        logDebug(`解析环境变量 USER_AGENTS_JSON 失败: ${e.message}，使用默认值`);
     }
-}
+    // --- 配置读取结束 ---
 
-// 保存用户标签
-function saveUserTags() {
-    try {
-        localStorage.setItem('userMovieTags', JSON.stringify(movieTags));
-        localStorage.setItem('userTvTags', JSON.stringify(tvTags));
-    } catch (e) {
-        console.error('保存标签失败：', e);
-        showToast('保存标签失败', 'error');
-    }
-}
 
-let doubanMovieTvCurrentSwitch = 'movie';
-let doubanCurrentTag = '热门';
-let doubanPageStart = 0;
-const doubanPageSize = 16; // 一次显示的项目数量
-const DOUBAN_API_BASE = 'https://movie.douban.com';
-const DOUBAN_DEFAULT_COVER = 'assets/img/default-cover.png';
+    // --- 辅助函数 ---
 
-// 初始化豆瓣功能
-function initDouban() {
-    // 设置豆瓣开关的初始状态
-    const doubanToggle = document.getElementById('doubanToggle');
-    if (doubanToggle) {
-        const isEnabled = localStorage.getItem('doubanEnabled') === 'true';
-        doubanToggle.checked = isEnabled;
+    // 验证代理请求的鉴权
+    async function validateAuth(request, env) {
+        const url = new URL(request.url);
+        const authHash = url.searchParams.get('auth');
+        const timestamp = url.searchParams.get('t');
         
-        // 设置开关外观
-        const toggleBg = doubanToggle.nextElementSibling;
-        const toggleDot = toggleBg.nextElementSibling;
-        if (isEnabled) {
-            toggleBg.classList.add('bg-pink-600');
-            toggleDot.classList.add('translate-x-6');
+        // 获取服务器端密码
+        const serverPassword = env.PASSWORD;
+        if (!serverPassword) {
+            console.error('服务器未设置 PASSWORD 环境变量，代理访问被拒绝');
+            return false;
         }
         
-        // 添加事件监听
-        doubanToggle.addEventListener('change', function(e) {
-            const isChecked = e.target.checked;
-            localStorage.setItem('doubanEnabled', isChecked);
-            
-            // 更新开关外观
-            if (isChecked) {
-                toggleBg.classList.add('bg-pink-600');
-                toggleDot.classList.add('translate-x-6');
-            } else {
-                toggleBg.classList.remove('bg-pink-600');
-                toggleDot.classList.remove('translate-x-6');
-            }
-            
-            // 更新显示状态
-            updateDoubanVisibility();
-        });
-        
-        // 初始更新显示状态
-        updateDoubanVisibility();
-
-        // 滚动到页面顶部
-        window.scrollTo(0, 0);
-    }
-
-    // 加载用户标签
-    loadUserTags();
-
-    // 渲染电影/电视剧切换
-    renderDoubanMovieTvSwitch();
-    
-    // 渲染豆瓣标签
-    renderDoubanTags();
-    
-    // 换一批按钮事件监听
-    setupDoubanRefreshBtn();
-    
-    // 初始加载热门内容
-    if (localStorage.getItem('doubanEnabled') === 'true') {
-        renderRecommend(doubanCurrentTag, doubanPageSize, doubanPageStart);
-    }
-}
-
-// 根据设置更新豆瓣区域的显示状态
-function updateDoubanVisibility() {
-    const doubanArea = document.getElementById('doubanArea');
-    if (!doubanArea) return;
-    
-    const isEnabled = localStorage.getItem('doubanEnabled') === 'true';
-    const isSearching = document.getElementById('resultsArea') && 
-        !document.getElementById('resultsArea').classList.contains('hidden');
-    
-    // 只有在启用且没有搜索结果显示时才显示豆瓣区域
-    if (isEnabled && !isSearching) {
-        doubanArea.classList.remove('hidden');
-        // 如果豆瓣结果为空，重新加载
-        if (document.getElementById('douban-results').children.length === 0) {
-            renderRecommend(doubanCurrentTag, doubanPageSize, doubanPageStart);
-        }
-    } else {
-        doubanArea.classList.add('hidden');
-    }
-}
-
-// 只填充搜索框，不执行搜索，让用户自主决定搜索时机
-function fillSearchInput(title) {
-    if (!title) return;
-    
-    // 安全处理标题，防止XSS
-    const safeTitle = title
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-    
-    const input = document.getElementById('searchInput');
-    if (input) {
-        input.value = safeTitle;
-        
-        // 聚焦搜索框，便于用户立即使用键盘操作
-        input.focus();
-        
-        // 显示一个提示，告知用户点击搜索按钮进行搜索
-        showToast('已填充搜索内容，点击搜索按钮开始搜索', 'info');
-    }
-}
-
-// 填充搜索框并执行搜索
-function fillAndSearch(title) {
-    if (!title) return;
-    
-    // 安全处理标题，防止XSS
-    const safeTitle = title
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-    
-    const input = document.getElementById('searchInput');
-    if (input) {
-        input.value = safeTitle;
-        search(); // 使用已有的search函数执行搜索
-        
-        // 同时更新浏览器URL，使其反映当前的搜索状态
+        // 使用 SHA-256 哈希算法（与其他平台保持一致）
+        // 在 Cloudflare Workers 中使用 crypto.subtle
         try {
-            // 使用URI编码确保特殊字符能够正确显示
-            const encodedQuery = encodeURIComponent(safeTitle);
-            // 使用HTML5 History API更新URL，不刷新页面
-            window.history.pushState(
-                { search: safeTitle }, 
-                `搜索: ${safeTitle} - LibreTV`, 
-                `/s=${encodedQuery}`
-            );
-            // 更新页面标题
-            document.title = `搜索: ${safeTitle} - LibreTV`;
+            const encoder = new TextEncoder();
+            const data = encoder.encode(serverPassword);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const serverPasswordHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            
+            if (!authHash || authHash !== serverPasswordHash) {
+                console.warn('代理请求鉴权失败：密码哈希不匹配');
+                return false;
+            }
+        } catch (error) {
+            console.error('计算密码哈希失败:', error);
+            return false;
+        }
+        
+        // 验证时间戳（10分钟有效期）
+        if (timestamp) {
+            const now = Date.now();
+            const maxAge = 10 * 60 * 1000; // 10分钟
+            if (now - parseInt(timestamp) > maxAge) {
+                console.warn('代理请求鉴权失败：时间戳过期');
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
+    // 验证鉴权（主函数调用）
+    if (!validateAuth(request, env)) {
+        return new Response('Unauthorized', { 
+            status: 401,
+            headers: {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+                'Access-Control-Allow-Headers': '*'
+            }
+        });
+    }
+
+    // 输出调试日志 (需要设置 DEBUG: true 环境变量)
+    function logDebug(message) {
+        if (DEBUG_ENABLED) {
+            console.log(`[Proxy Func] ${message}`);
+        }
+    }
+
+    // 从请求路径中提取目标 URL
+    function getTargetUrlFromPath(pathname) {
+        // 路径格式: /proxy/经过编码的URL
+        // 例如: /proxy/https%3A%2F%2Fexample.com%2Fplaylist.m3u8
+        const encodedUrl = pathname.replace(/^\/proxy\//, '');
+        if (!encodedUrl) return null;
+        try {
+            // 解码
+            let decodedUrl = decodeURIComponent(encodedUrl);
+
+             // 简单检查解码后是否是有效的 http/https URL
+             if (!decodedUrl.match(/^https?:\/\//i)) {
+                 // 也许原始路径就没有编码？如果看起来像URL就直接用
+                 if (encodedUrl.match(/^https?:\/\//i)) {
+                     decodedUrl = encodedUrl;
+                     logDebug(`Warning: Path was not encoded but looks like URL: ${decodedUrl}`);
+                 } else {
+                    logDebug(`无效的目标URL格式 (解码后): ${decodedUrl}`);
+                    return null;
+                 }
+             }
+             return decodedUrl;
+
         } catch (e) {
-            console.error('更新浏览器历史失败:', e);
+            logDebug(`解码目标URL时出错: ${encodedUrl} - ${e.message}`);
+            return null;
         }
     }
-}
 
-// 填充搜索框，确保豆瓣资源API被选中，然后执行搜索
-async function fillAndSearchWithDouban(title) {
-    if (!title) return;
-    
-    // 安全处理标题，防止XSS
-    const safeTitle = title
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-    
-    // 确保豆瓣资源API被选中
-    if (typeof selectedAPIs !== 'undefined' && !selectedAPIs.includes('dbzy')) {
-        // 在设置中勾选豆瓣资源API复选框
-        const doubanCheckbox = document.querySelector('input[id="api_dbzy"]');
-        if (doubanCheckbox) {
-            doubanCheckbox.checked = true;
-            
-            // 触发updateSelectedAPIs函数以更新状态
-            if (typeof updateSelectedAPIs === 'function') {
-                updateSelectedAPIs();
-            } else {
-                // 如果函数不可用，则手动添加到selectedAPIs
-                selectedAPIs.push('dbzy');
-                localStorage.setItem('selectedAPIs', JSON.stringify(selectedAPIs));
-                
-                // 更新选中API计数（如果有这个元素）
-                const countEl = document.getElementById('selectedAPICount');
-                if (countEl) {
-                    countEl.textContent = selectedAPIs.length;
-                }
-            }
-            
-            showToast('已自动选择豆瓣资源API', 'info');
-        }
+    // 创建标准化的响应
+    function createResponse(body, status = 200, headers = {}) {
+        const responseHeaders = new Headers(headers);
+        // 关键：添加 CORS 跨域头，允许前端 JS 访问代理后的响应
+        responseHeaders.set("Access-Control-Allow-Origin", "*"); // 允许任何来源访问
+        responseHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS"); // 允许的方法
+        responseHeaders.set("Access-Control-Allow-Headers", "*"); // 允许所有请求头
+
+        // 处理 CORS 预检请求 (OPTIONS) - 放在这里确保所有响应都处理
+         if (request.method === "OPTIONS") {
+             // 使用下面的 onOptions 函数可以更规范，但在这里处理也可以
+             return new Response(null, {
+                 status: 204, // No Content
+                 headers: responseHeaders // 包含上面设置的 CORS 头
+             });
+         }
+
+        return new Response(body, { status, headers: responseHeaders });
     }
-    
-    // 填充搜索框并执行搜索
-    const input = document.getElementById('searchInput');
-    if (input) {
-        input.value = safeTitle;
-        await search(); // 使用已有的search函数执行搜索
-        
-        // 更新浏览器URL，使其反映当前的搜索状态
+
+    // 创建 M3U8 类型的响应
+    function createM3u8Response(content) {
+        return createResponse(content, 200, {
+            "Content-Type": "application/vnd.apple.mpegurl", // M3U8 的标准 MIME 类型
+            "Cache-Control": `public, max-age=${CACHE_TTL}` // 允许浏览器和CDN缓存
+        });
+    }
+
+    // 获取随机 User-Agent
+    function getRandomUserAgent() {
+        return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+    }
+
+    // 获取 URL 的基础路径 (用于解析相对路径)
+    function getBaseUrl(urlStr) {
         try {
-            // 使用URI编码确保特殊字符能够正确显示
-            const encodedQuery = encodeURIComponent(safeTitle);
-            // 使用HTML5 History API更新URL，不刷新页面
-            window.history.pushState(
-                { search: safeTitle }, 
-                `搜索: ${safeTitle} - LibreTV`, 
-                `/s=${encodedQuery}`
-            );
-            // 更新页面标题
-            document.title = `搜索: ${safeTitle} - LibreTV`;
+            const parsedUrl = new URL(urlStr);
+            // 如果路径是根目录，或者没有斜杠，直接返回 origin + /
+            if (!parsedUrl.pathname || parsedUrl.pathname === '/') {
+                return `${parsedUrl.origin}/`;
+            }
+            const pathParts = parsedUrl.pathname.split('/');
+            pathParts.pop(); // 移除文件名或最后一个路径段
+            return `${parsedUrl.origin}${pathParts.join('/')}/`;
         } catch (e) {
-            console.error('更新浏览器历史失败:', e);
-        }
-
-        if (window.innerWidth <= 768) {
-          window.scrollTo({
-              top: 0,
-              behavior: 'smooth'
-          });
+            logDebug(`获取 BaseUrl 时出错: ${urlStr} - ${e.message}`);
+            // 备用方法：找到最后一个斜杠
+            const lastSlashIndex = urlStr.lastIndexOf('/');
+            // 确保不是协议部分的斜杠 (http://)
+            return lastSlashIndex > urlStr.indexOf('://') + 2 ? urlStr.substring(0, lastSlashIndex + 1) : urlStr + '/';
         }
     }
-}
 
-// 渲染电影/电视剧切换器
-function renderDoubanMovieTvSwitch() {
-    // 获取切换按钮元素
-    const movieToggle = document.getElementById('douban-movie-toggle');
-    const tvToggle = document.getElementById('douban-tv-toggle');
 
-    if (!movieToggle ||!tvToggle) return;
-
-    movieToggle.addEventListener('click', function() {
-        if (doubanMovieTvCurrentSwitch !== 'movie') {
-            // 更新按钮样式
-            movieToggle.classList.add('bg-pink-600', 'text-white');
-            movieToggle.classList.remove('text-gray-300');
-            
-            tvToggle.classList.remove('bg-pink-600', 'text-white');
-            tvToggle.classList.add('text-gray-300');
-            
-            doubanMovieTvCurrentSwitch = 'movie';
-            doubanCurrentTag = '热门';
-
-            // 重新加载豆瓣内容
-            renderDoubanTags(movieTags);
-
-            // 换一批按钮事件监听
-            setupDoubanRefreshBtn();
-            
-            // 初始加载热门内容
-            if (localStorage.getItem('doubanEnabled') === 'true') {
-                renderRecommend(doubanCurrentTag, doubanPageSize, doubanPageStart);
-            }
+    // 将相对 URL 转换为绝对 URL
+    function resolveUrl(baseUrl, relativeUrl) {
+        // 如果已经是绝对 URL，直接返回
+        if (relativeUrl.match(/^https?:\/\//i)) {
+            return relativeUrl;
         }
-    });
-    
-    // 电视剧按钮点击事件
-    tvToggle.addEventListener('click', function() {
-        if (doubanMovieTvCurrentSwitch !== 'tv') {
-            // 更新按钮样式
-            tvToggle.classList.add('bg-pink-600', 'text-white');
-            tvToggle.classList.remove('text-gray-300');
-            
-            movieToggle.classList.remove('bg-pink-600', 'text-white');
-            movieToggle.classList.add('text-gray-300');
-            
-            doubanMovieTvCurrentSwitch = 'tv';
-            doubanCurrentTag = '热门';
-
-            // 重新加载豆瓣内容
-            renderDoubanTags(tvTags);
-
-            // 换一批按钮事件监听
-            setupDoubanRefreshBtn();
-            
-            // 初始加载热门内容
-            if (localStorage.getItem('doubanEnabled') === 'true') {
-                renderRecommend(doubanCurrentTag, doubanPageSize, doubanPageStart);
+        try {
+            // 使用 URL 对象来处理相对路径
+            return new URL(relativeUrl, baseUrl).toString();
+        } catch (e) {
+            logDebug(`解析 URL 失败: baseUrl=${baseUrl}, relativeUrl=${relativeUrl}, error=${e.message}`);
+            // 简单的备用方法
+            if (relativeUrl.startsWith('/')) {
+                // 处理根路径相对 URL
+                const urlObj = new URL(baseUrl);
+                return `${urlObj.origin}${relativeUrl}`;
             }
+            // 处理同级目录相对 URL
+            return `${baseUrl.replace(/\/[^/]*$/, '/')}${relativeUrl}`; // 确保baseUrl以 / 结尾
         }
-    });
-}
+    }
 
-// 渲染豆瓣标签选择器
-function renderDoubanTags(tags) {
-    const tagContainer = document.getElementById('douban-tags');
-    if (!tagContainer) return;
-    
-    // 确定当前应该使用的标签列表
-    const currentTags = doubanMovieTvCurrentSwitch === 'movie' ? movieTags : tvTags;
-    
-    // 清空标签容器
-    tagContainer.innerHTML = '';
+    // 将目标 URL 重写为内部代理路径 (/proxy/...)
+    function rewriteUrlToProxy(targetUrl) {
+        // 确保目标URL被正确编码，以便作为路径的一部分
+        return `/proxy/${encodeURIComponent(targetUrl)}`;
+    }
 
-    // 先添加标签管理按钮
-    const manageBtn = document.createElement('button');
-    manageBtn.className = 'py-1.5 px-3.5 rounded text-sm font-medium transition-all duration-300 bg-[#1a1a1a] text-gray-300 hover:bg-pink-700 hover:text-white border border-[#333] hover:border-white';
-    manageBtn.innerHTML = '<span class="flex items-center"><svg class="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>管理标签</span>';
-    manageBtn.onclick = function() {
-        showTagManageModal();
-    };
-    tagContainer.appendChild(manageBtn);
-
-    // 添加所有标签
-    currentTags.forEach(tag => {
-        const btn = document.createElement('button');
-        
-        // 设置样式
-        let btnClass = 'py-1.5 px-3.5 rounded text-sm font-medium transition-all duration-300 border ';
-        
-        // 当前选中的标签使用高亮样式
-        if (tag === doubanCurrentTag) {
-            btnClass += 'bg-pink-600 text-white shadow-md border-white';
-        } else {
-            btnClass += 'bg-[#1a1a1a] text-gray-300 hover:bg-pink-700 hover:text-white border-[#333] hover:border-white';
-        }
-        
-        btn.className = btnClass;
-        btn.textContent = tag;
-        
-        btn.onclick = function() {
-            if (doubanCurrentTag !== tag) {
-                doubanCurrentTag = tag;
-                doubanPageStart = 0;
-                renderRecommend(doubanCurrentTag, doubanPageSize, doubanPageStart);
-                renderDoubanTags();
-            }
-        };
-        
-        tagContainer.appendChild(btn);
-    });
-}
-
-// 设置换一批按钮事件
-function setupDoubanRefreshBtn() {
-    // 修复ID，使用正确的ID douban-refresh 而不是 douban-refresh-btn
-    const btn = document.getElementById('douban-refresh');
-    if (!btn) return;
-    
-    btn.onclick = function() {
-        doubanPageStart += doubanPageSize;
-        if (doubanPageStart > 9 * doubanPageSize) {
-            doubanPageStart = 0;
-        }
-        
-        renderRecommend(doubanCurrentTag, doubanPageSize, doubanPageStart);
-    };
-}
-
-function fetchDoubanTags() {
-    const movieTagsTarget = `https://movie.douban.com/j/search_tags?type=movie`
-    fetchDoubanData(movieTagsTarget)
-        .then(data => {
-            movieTags = data.tags;
-            if (doubanMovieTvCurrentSwitch === 'movie') {
-                renderDoubanTags(movieTags);
-            }
-        })
-        .catch(error => {
-            console.error("获取豆瓣热门电影标签失败：", error);
+    // 获取远程内容及其类型
+    async function fetchContentWithType(targetUrl) {
+        const headers = new Headers({
+            'User-Agent': getRandomUserAgent(),
+            'Accept': '*/*',
+            // 尝试传递一些原始请求的头信息
+            'Accept-Language': request.headers.get('Accept-Language') || 'zh-CN,zh;q=0.9,en;q=0.8',
+            // 尝试设置 Referer 为目标网站的域名，或者传递原始 Referer
+            'Referer': request.headers.get('Referer') || new URL(targetUrl).origin
         });
-    const tvTagsTarget = `https://movie.douban.com/j/search_tags?type=tv`
-    fetchDoubanData(tvTagsTarget)
-       .then(data => {
-            tvTags = data.tags;
-            if (doubanMovieTvCurrentSwitch === 'tv') {
-                renderDoubanTags(tvTags);
-            }
-        })
-       .catch(error => {
-            console.error("获取豆瓣热门电视剧标签失败：", error);
-        });
-}
-
-// 渲染热门推荐内容
-function renderRecommend(tag, pageLimit, pageStart) {
-    const container = document.getElementById("douban-results");
-    if (!container) return;
-
-    const loadingOverlayHTML = `
-        <div class="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-10">
-            <div class="flex items-center justify-center">
-                <div class="w-6 h-6 border-2 border-pink-500 border-t-transparent rounded-full animate-spin inline-block"></div>
-                <span class="text-pink-500 ml-4">加载中...</span>
-            </div>
-        </div>
-    `;
-
-    container.classList.add("relative");
-    container.insertAdjacentHTML('beforeend', loadingOverlayHTML);
-    
-    const target = getDoubanSubjectUrl(doubanMovieTvCurrentSwitch, tag, pageLimit, pageStart);
-    
-    // 使用通用请求函数
-    fetchDoubanData(target)
-        .then(data => renderDoubanCards(data, container))
-        .catch(error => {
-            console.error("获取豆瓣数据失败：", error);
-            container.innerHTML = `
-                <div class="col-span-full text-center py-8">
-                    <div class="text-red-400">❌ 获取豆瓣数据失败，请稍后重试</div>
-                    <div class="text-gray-500 text-sm mt-2">提示：使用VPN可能有助于解决此问题</div>
-                </div>
-            `;
-        });
-}
-
-async function fetchDoubanData(url) {
-    const requestUrls = await buildDoubanRequestUrls(url);
-    let lastError = null;
-
-    for (const requestUrl of requestUrls) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 12000);
 
         try {
-            const response = await fetch(requestUrl, {
-                signal: controller.signal,
-                headers: {
-                    'Accept': 'application/json, text/plain, */*'
-                }
-            });
-            clearTimeout(timeoutId);
+            // 直接请求目标 URL
+            logDebug(`开始直接请求: ${targetUrl}`);
+            // Cloudflare Functions 的 fetch 默认支持重定向
+            const response = await fetch(targetUrl, { headers, redirect: 'follow' });
 
             if (!response.ok) {
-                throw new Error(`HTTP error! Status: ${response.status}`);
+                 const errorBody = await response.text().catch(() => '');
+                 logDebug(`请求失败: ${response.status} ${response.statusText} - ${targetUrl}`);
+                 throw new Error(`HTTP error ${response.status}: ${response.statusText}. URL: ${targetUrl}. Body: ${errorBody.substring(0, 150)}`);
             }
 
-            const contentType = response.headers.get('content-type') || '';
-            if (contentType.includes('application/json')) {
-                const json = await response.json();
-                return normalizeDoubanResponse(json);
-            }
+            // 读取响应内容为文本
+            const content = await response.text();
+            const contentType = response.headers.get('Content-Type') || '';
+            logDebug(`请求成功: ${targetUrl}, Content-Type: ${contentType}, 内容长度: ${content.length}`);
+            return { content, contentType, responseHeaders: response.headers }; // 同时返回原始响应头
 
-            return parseDoubanResponseText(await response.text());
         } catch (error) {
-            clearTimeout(timeoutId);
-            lastError = error;
-            console.warn('Douban request failed, trying next endpoint:', requestUrl, error);
+             logDebug(`请求彻底失败: ${targetUrl}: ${error.message}`);
+            // 抛出更详细的错误
+            throw new Error(`请求目标URL失败 ${targetUrl}: ${error.message}`);
         }
     }
 
-    throw lastError || new Error('All Douban request endpoints failed');
-}
-
-async function buildDoubanRequestUrls(url) {
-    const urls = [];
-
-    if (typeof PROXY_URL !== 'undefined' && PROXY_URL) {
-        const proxyUrl = PROXY_URL + encodeURIComponent(url);
-        if (typeof window.ProxyAuth?.addAuthToProxyUrl === 'function') {
-            urls.push(await window.ProxyAuth.addAuthToProxyUrl(proxyUrl));
-        } else {
-            urls.push(proxyUrl);
+    // 判断是否是 M3U8 内容
+    function isM3u8Content(content, contentType) {
+        // 检查 Content-Type
+        if (contentType && (contentType.includes('application/vnd.apple.mpegurl') || contentType.includes('application/x-mpegurl') || contentType.includes('audio/mpegurl'))) {
+            return true;
         }
+        // 检查内容本身是否以 #EXTM3U 开头
+        return content && typeof content === 'string' && content.trim().startsWith('#EXTM3U');
     }
 
-    if (urls.length === 0) {
-        urls.push(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
-        urls.push(`https://corsproxy.io/?${encodeURIComponent(url)}`);
-        urls.push(url);
-    }
-
-    return [...new Set(urls)];
-}
-
-function normalizeDoubanResponse(data) {
-    if (data && typeof data.contents === 'string') {
-        return parseDoubanResponseText(data.contents);
-    }
-    return data;
-}
-
-function parseDoubanResponseText(text) {
-    if (!text) {
-        throw new Error('Empty Douban response');
-    }
-
-    const trimmed = text.trim();
-    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-        return normalizeDoubanResponse(JSON.parse(trimmed));
-    }
-
-    throw new Error('Unable to parse Douban response');
-}
-
-function getDoubanSubjectUrl(type, tag, pageLimit, pageStart) {
-    const params = new URLSearchParams({
-        type,
-        tag,
-        sort: 'recommend',
-        page_limit: String(pageLimit),
-        page_start: String(pageStart)
-    });
-    return `${DOUBAN_API_BASE}/j/search_subjects?${params.toString()}`;
-}
-
-function getDoubanImageNodes(url) {
-    if (!url) {
-        return {
-            primary: DOUBAN_DEFAULT_COVER,
-            fallback: DOUBAN_DEFAULT_COVER,
-            finalFallback: DOUBAN_DEFAULT_COVER
-        };
-    }
-
-    const normalizedUrl = url.replace(/\\/g, '');
-    const baiduUrl = `https://image.baidu.com/search/down?url=${encodeURIComponent(normalizedUrl)}`;
-    const proxiedUrl = typeof PROXY_URL !== 'undefined' && PROXY_URL ?
-        PROXY_URL + encodeURIComponent(normalizedUrl) :
-        baiduUrl;
-
-    return {
-        primary: proxiedUrl,
-        fallback: baiduUrl,
-        finalFallback: normalizedUrl
-    };
-}
-
-function handleDoubanImageError(img) {
-    const fallback = img.dataset.fallback;
-    const finalFallback = img.dataset.finalFallback;
-
-    if (!img.dataset.retryStage && fallback && img.src !== fallback) {
-        img.dataset.retryStage = 'fallback';
-        img.src = fallback;
-        return;
-    }
-
-    if (img.dataset.retryStage === 'fallback' && finalFallback && img.src !== finalFallback) {
-        img.dataset.retryStage = 'direct';
-        img.src = finalFallback;
-        return;
-    }
-
-    img.onerror = null;
-    img.src = DOUBAN_DEFAULT_COVER;
-    img.classList.add('object-contain');
-}
-
-
-function renderDoubanCards(data, container) {
-    // 创建文档片段以提高性能
-    const fragment = document.createDocumentFragment();
-    
-    // 如果没有数据
-    if (!data.subjects || data.subjects.length === 0) {
-        const emptyEl = document.createElement("div");
-        emptyEl.className = "col-span-full text-center py-8";
-        emptyEl.innerHTML = `
-            <div class="text-pink-500">❌ 暂无数据，请尝试其他分类或刷新</div>
-        `;
-        fragment.appendChild(emptyEl);
-    } else {
-        // 循环创建每个影视卡片
-        for (const item of data.subjects) {
-            const card = document.createElement("div");
-            card.className = "bg-[#111] hover:bg-[#222] transition-all duration-300 rounded-lg overflow-hidden flex flex-col transform hover:scale-105 shadow-md hover:shadow-lg";
-            
-            // 生成卡片内容，确保安全显示（防止XSS）
-            const safeTitle = item.title
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;');
-            
-            const safeRate = (item.rate || "暂无")
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
-            
-            // 处理图片URL
-            // 1. 直接使用豆瓣图片URL (添加no-referrer属性)
-            const originalCoverUrl = item.cover;
-            
-            // 2. 也准备代理URL作为备选
-            const imageNodes = getDoubanImageNodes(originalCoverUrl);
-            
-            // 为不同设备优化卡片布局
-            card.innerHTML = `
-                <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" onclick="fillAndSearchWithDouban('${safeTitle}')">
-                    <img src="${imageNodes.primary}" alt="${safeTitle}" 
-                        class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
-                        data-fallback="${imageNodes.fallback}"
-                        data-final-fallback="${imageNodes.finalFallback}"
-                        onerror="handleDoubanImageError(this)"
-                        loading="lazy" referrerpolicy="no-referrer">
-                    <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent opacity-60"></div>
-                    <div class="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm">
-                        <span class="text-yellow-400">★</span> ${safeRate}
-                    </div>
-                    <div class="absolute bottom-2 right-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm hover:bg-[#333] transition-colors">
-                        <a href="${item.url}" target="_blank" rel="noopener noreferrer" title="在豆瓣查看" onclick="event.stopPropagation();">
-                            🔗
-                        </a>
-                    </div>
-                </div>
-                <div class="p-2 text-center bg-[#111]">
-                    <button onclick="fillAndSearchWithDouban('${safeTitle}')" 
-                            class="text-sm font-medium text-white truncate w-full hover:text-pink-400 transition"
-                            title="${safeTitle}">
-                        ${safeTitle}
-                    </button>
-                </div>
-            `;
-            
-            fragment.appendChild(card);
+    // 判断是否是媒体文件 (根据扩展名和 Content-Type) - 这部分在此代理中似乎未使用，但保留
+    function isMediaFile(url, contentType) {
+        if (contentType) {
+            for (const mediaType of MEDIA_CONTENT_TYPES) {
+                if (contentType.toLowerCase().startsWith(mediaType)) {
+                    return true;
+                }
+            }
         }
-    }
-    
-    // 清空并添加所有新元素
-    container.innerHTML = "";
-    container.appendChild(fragment);
-}
-
-// 重置到首页
-function resetToHome() {
-    resetSearchArea();
-    updateDoubanVisibility();
-}
-
-// 加载豆瓣首页内容
-document.addEventListener('DOMContentLoaded', initDouban);
-
-// 显示标签管理模态框
-function showTagManageModal() {
-    // 确保模态框在页面上只有一个实例
-    let modal = document.getElementById('tagManageModal');
-    if (modal) {
-        document.body.removeChild(modal);
-    }
-    
-    // 创建模态框元素
-    modal = document.createElement('div');
-    modal.id = 'tagManageModal';
-    modal.className = 'fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-40';
-    
-    // 当前使用的标签类型和默认标签
-    const isMovie = doubanMovieTvCurrentSwitch === 'movie';
-    const currentTags = isMovie ? movieTags : tvTags;
-    const defaultTags = isMovie ? defaultMovieTags : defaultTvTags;
-    
-    // 模态框内容
-    modal.innerHTML = `
-        <div class="bg-[#191919] rounded-lg p-6 max-w-md w-full max-h-[90vh] overflow-y-auto relative">
-            <button id="closeTagModal" class="absolute top-4 right-4 text-gray-400 hover:text-white text-xl">&times;</button>
-            
-            <h3 class="text-xl font-bold text-white mb-4">标签管理 (${isMovie ? '电影' : '电视剧'})</h3>
-            
-            <div class="mb-4">
-                <div class="flex justify-between items-center mb-2">
-                    <h4 class="text-lg font-medium text-gray-300">标签列表</h4>
-                    <button id="resetTagsBtn" class="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded">
-                        恢复默认标签
-                    </button>
-                </div>
-                <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4" id="tagsGrid">
-                    ${currentTags.length ? currentTags.map(tag => {
-                        // "热门"标签不能删除
-                        const canDelete = tag !== '热门';
-                        return `
-                            <div class="bg-[#1a1a1a] text-gray-300 py-1.5 px-3 rounded text-sm font-medium flex justify-between items-center group">
-                                <span>${tag}</span>
-                                ${canDelete ? 
-                                    `<button class="delete-tag-btn text-gray-500 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity" 
-                                        data-tag="${tag}">✕</button>` : 
-                                    `<span class="text-gray-500 text-xs italic opacity-0 group-hover:opacity-100">必需</span>`
-                                }
-                            </div>
-                        `;
-                    }).join('') : 
-                    `<div class="col-span-full text-center py-4 text-gray-500">无标签，请添加或恢复默认</div>`}
-                </div>
-            </div>
-            
-            <div class="border-t border-gray-700 pt-4">
-                <h4 class="text-lg font-medium text-gray-300 mb-3">添加新标签</h4>
-                <form id="addTagForm" class="flex items-center">
-                    <input type="text" id="newTagInput" placeholder="输入标签名称..." 
-                           class="flex-1 bg-[#222] text-white border border-gray-700 rounded px-3 py-2 focus:outline-none focus:border-pink-500">
-                    <button type="submit" class="ml-2 bg-pink-600 hover:bg-pink-700 text-white px-4 py-2 rounded">添加</button>
-                </form>
-                <p class="text-xs text-gray-500 mt-2">提示：标签名称不能为空，不能重复，不能包含特殊字符</p>
-            </div>
-        </div>
-    `;
-    
-    // 添加模态框到页面
-    document.body.appendChild(modal);
-    
-    // 焦点放在输入框上
-    setTimeout(() => {
-        document.getElementById('newTagInput').focus();
-    }, 100);
-    
-    // 添加事件监听器 - 关闭按钮
-    document.getElementById('closeTagModal').addEventListener('click', function() {
-        document.body.removeChild(modal);
-    });
-    
-    // 添加事件监听器 - 点击模态框外部关闭
-    modal.addEventListener('click', function(e) {
-        if (e.target === modal) {
-            document.body.removeChild(modal);
+        const urlLower = url.toLowerCase();
+        for (const ext of MEDIA_FILE_EXTENSIONS) {
+            if (urlLower.endsWith(ext) || urlLower.includes(`${ext}?`)) {
+                return true;
+            }
         }
-    });
-    
-    // 添加事件监听器 - 恢复默认标签按钮
-    document.getElementById('resetTagsBtn').addEventListener('click', function() {
-        resetTagsToDefault();
-        showTagManageModal(); // 重新加载模态框
-    });
-    
-    // 添加事件监听器 - 删除标签按钮
-    const deleteButtons = document.querySelectorAll('.delete-tag-btn');
-    deleteButtons.forEach(btn => {
-        btn.addEventListener('click', function() {
-            const tagToDelete = this.getAttribute('data-tag');
-            deleteTag(tagToDelete);
-            showTagManageModal(); // 重新加载模态框
+        return false;
+    }
+
+    // 处理 M3U8 中的 #EXT-X-KEY 行 (加密密钥)
+    function processKeyLine(line, baseUrl) {
+        return line.replace(/URI="([^"]+)"/, (match, uri) => {
+            const absoluteUri = resolveUrl(baseUrl, uri);
+            logDebug(`处理 KEY URI: 原始='${uri}', 绝对='${absoluteUri}'`);
+            return `URI="${rewriteUrlToProxy(absoluteUri)}"`; // 重写为代理路径
         });
-    });
-    
-    // 添加事件监听器 - 表单提交
-    document.getElementById('addTagForm').addEventListener('submit', function(e) {
-        e.preventDefault();
-        const input = document.getElementById('newTagInput');
-        const newTag = input.value.trim();
-        
-        if (newTag) {
-            addTag(newTag);
-            input.value = '';
-            showTagManageModal(); // 重新加载模态框
+    }
+
+    // 处理 M3U8 中的 #EXT-X-MAP 行 (初始化片段)
+    function processMapLine(line, baseUrl) {
+         return line.replace(/URI="([^"]+)"/, (match, uri) => {
+             const absoluteUri = resolveUrl(baseUrl, uri);
+             logDebug(`处理 MAP URI: 原始='${uri}', 绝对='${absoluteUri}'`);
+             return `URI="${rewriteUrlToProxy(absoluteUri)}"`; // 重写为代理路径
+         });
+     }
+
+    // 处理媒体 M3U8 播放列表 (包含视频/音频片段)
+    function processMediaPlaylist(url, content) {
+        const baseUrl = getBaseUrl(url);
+        const lines = content.split('\n');
+        const output = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            // 保留最后的空行
+            if (!line && i === lines.length - 1) {
+                output.push(line);
+                continue;
+            }
+            if (!line) continue; // 跳过中间的空行
+
+            if (line.startsWith('#EXT-X-KEY')) {
+                output.push(processKeyLine(line, baseUrl));
+                continue;
+            }
+            if (line.startsWith('#EXT-X-MAP')) {
+                output.push(processMapLine(line, baseUrl));
+                 continue;
+            }
+             if (line.startsWith('#EXTINF')) {
+                 output.push(line);
+                 continue;
+             }
+             if (!line.startsWith('#')) {
+                 const absoluteUrl = resolveUrl(baseUrl, line);
+                 logDebug(`重写媒体片段: 原始='${line}', 绝对='${absoluteUrl}'`);
+                 output.push(rewriteUrlToProxy(absoluteUrl));
+                 continue;
+             }
+             // 其他 M3U8 标签直接添加
+             output.push(line);
         }
+        return output.join('\n');
+    }
+
+    // 递归处理 M3U8 内容
+     async function processM3u8Content(targetUrl, content, recursionDepth = 0, env) {
+         if (content.includes('#EXT-X-STREAM-INF') || content.includes('#EXT-X-MEDIA:')) {
+             logDebug(`检测到主播放列表: ${targetUrl}`);
+             return await processMasterPlaylist(targetUrl, content, recursionDepth, env);
+         }
+         logDebug(`检测到媒体播放列表: ${targetUrl}`);
+         return processMediaPlaylist(targetUrl, content);
+     }
+
+    // 处理主 M3U8 播放列表
+    async function processMasterPlaylist(url, content, recursionDepth, env) {
+        if (recursionDepth > MAX_RECURSION) {
+            throw new Error(`处理主列表时递归层数过多 (${MAX_RECURSION}): ${url}`);
+        }
+
+        const baseUrl = getBaseUrl(url);
+        const lines = content.split('\n');
+        let highestBandwidth = -1;
+        let bestVariantUrl = '';
+
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
+                const bandwidthMatch = lines[i].match(/BANDWIDTH=(\d+)/);
+                const currentBandwidth = bandwidthMatch ? parseInt(bandwidthMatch[1], 10) : 0;
+
+                 let variantUriLine = '';
+                 for (let j = i + 1; j < lines.length; j++) {
+                     const line = lines[j].trim();
+                     if (line && !line.startsWith('#')) {
+                         variantUriLine = line;
+                         i = j;
+                         break;
+                     }
+                 }
+
+                 if (variantUriLine && currentBandwidth >= highestBandwidth) {
+                     highestBandwidth = currentBandwidth;
+                     bestVariantUrl = resolveUrl(baseUrl, variantUriLine);
+                 }
+            }
+        }
+
+         if (!bestVariantUrl) {
+             logDebug(`主列表中未找到 BANDWIDTH 或 STREAM-INF，尝试查找第一个子列表引用: ${url}`);
+             for (let i = 0; i < lines.length; i++) {
+                 const line = lines[i].trim();
+                 if (line && !line.startsWith('#') && (line.endsWith('.m3u8') || line.includes('.m3u8?'))) { // 修复：检查是否包含 .m3u8?
+                    bestVariantUrl = resolveUrl(baseUrl, line);
+                     logDebug(`备选方案：找到第一个子列表引用: ${bestVariantUrl}`);
+                     break;
+                 }
+             }
+         }
+
+        if (!bestVariantUrl) {
+            logDebug(`在主列表 ${url} 中未找到任何有效的子播放列表 URL。可能格式有问题或仅包含音频/字幕。将尝试按媒体列表处理原始内容。`);
+            return processMediaPlaylist(url, content);
+        }
+
+        // --- 获取并处理选中的子 M3U8 ---
+
+        const cacheKey = `m3u8_processed:${bestVariantUrl}`; // 使用处理后的缓存键
+
+        let kvNamespace = null;
+        try {
+            kvNamespace = env.LIBRETV_PROXY_KV; // 从环境获取 KV 命名空间 (变量名在 Cloudflare 设置)
+            if (!kvNamespace) throw new Error("KV 命名空间未绑定");
+        } catch (e) {
+            logDebug(`KV 命名空间 'LIBRETV_PROXY_KV' 访问出错或未绑定: ${e.message}`);
+            kvNamespace = null; // 确保设为 null
+        }
+
+        if (kvNamespace) {
+            try {
+                const cachedContent = await kvNamespace.get(cacheKey);
+                if (cachedContent) {
+                    logDebug(`[缓存命中] 主列表的子列表: ${bestVariantUrl}`);
+                    return cachedContent;
+                } else {
+                    logDebug(`[缓存未命中] 主列表的子列表: ${bestVariantUrl}`);
+                }
+            } catch (kvError) {
+                logDebug(`从 KV 读取缓存失败 (${cacheKey}): ${kvError.message}`);
+                // 出错则继续执行，不影响功能
+            }
+        }
+
+        logDebug(`选择的子列表 (带宽: ${highestBandwidth}): ${bestVariantUrl}`);
+        const { content: variantContent, contentType: variantContentType } = await fetchContentWithType(bestVariantUrl);
+
+        if (!isM3u8Content(variantContent, variantContentType)) {
+            logDebug(`获取到的子列表 ${bestVariantUrl} 不是 M3U8 内容 (类型: ${variantContentType})。可能直接是媒体文件，返回原始内容。`);
+             // 如果不是M3U8，但看起来像媒体内容，直接返回代理后的内容
+             // 注意：这里可能需要决定是否直接代理这个非 M3U8 的 URL
+             // 为了简化，我们假设如果不是 M3U8，则流程中断或按原样处理
+             // 或者，尝试将其作为媒体列表处理？（当前行为）
+             // return createResponse(variantContent, 200, { 'Content-Type': variantContentType || 'application/octet-stream' });
+             // 尝试按媒体列表处理，以防万一
+             return processMediaPlaylist(bestVariantUrl, variantContent);
+
+        }
+
+        const processedVariant = await processM3u8Content(bestVariantUrl, variantContent, recursionDepth + 1, env);
+
+        if (kvNamespace) {
+             try {
+                 // 使用 waitUntil 异步写入缓存，不阻塞响应返回
+                 // 注意 KV 的写入限制 (免费版每天 1000 次)
+                 waitUntil(kvNamespace.put(cacheKey, processedVariant, { expirationTtl: CACHE_TTL }));
+                 logDebug(`已将处理后的子列表写入缓存: ${bestVariantUrl}`);
+             } catch (kvError) {
+                 logDebug(`向 KV 写入缓存失败 (${cacheKey}): ${kvError.message}`);
+                 // 写入失败不影响返回结果
+             }
+        }
+
+        return processedVariant;
+    }
+
+    // --- 主要请求处理逻辑 ---
+
+    try {
+        const targetUrl = getTargetUrlFromPath(url.pathname);
+
+        if (!targetUrl) {
+            logDebug(`无效的代理请求路径: ${url.pathname}`);
+            return createResponse("无效的代理请求。路径应为 /proxy/<经过编码的URL>", 400);
+        }
+
+        logDebug(`收到代理请求: ${targetUrl}`);
+
+        // --- 缓存检查 (KV) ---
+        const cacheKey = `proxy_raw:${targetUrl}`; // 使用原始内容的缓存键
+        let kvNamespace = null;
+        try {
+            kvNamespace = env.LIBRETV_PROXY_KV;
+            if (!kvNamespace) throw new Error("KV 命名空间未绑定");
+        } catch (e) {
+            logDebug(`KV 命名空间 'LIBRETV_PROXY_KV' 访问出错或未绑定: ${e.message}`);
+            kvNamespace = null;
+        }
+
+        if (kvNamespace) {
+            try {
+                const cachedDataJson = await kvNamespace.get(cacheKey); // 直接获取字符串
+                if (cachedDataJson) {
+                    logDebug(`[缓存命中] 原始内容: ${targetUrl}`);
+                    const cachedData = JSON.parse(cachedDataJson); // 解析 JSON
+                    const content = cachedData.body;
+                    let headers = {};
+                    try { headers = JSON.parse(cachedData.headers); } catch(e){} // 解析头部
+                    const contentType = headers['content-type'] || headers['Content-Type'] || '';
+
+                    if (isM3u8Content(content, contentType)) {
+                        logDebug(`缓存内容是 M3U8，重新处理: ${targetUrl}`);
+                        const processedM3u8 = await processM3u8Content(targetUrl, content, 0, env);
+                        return createM3u8Response(processedM3u8);
+                    } else {
+                        logDebug(`从缓存返回非 M3U8 内容: ${targetUrl}`);
+                        return createResponse(content, 200, new Headers(headers));
+                    }
+                } else {
+                     logDebug(`[缓存未命中] 原始内容: ${targetUrl}`);
+                 }
+            } catch (kvError) {
+                 logDebug(`从 KV 读取或解析缓存失败 (${cacheKey}): ${kvError.message}`);
+                 // 出错则继续执行，不影响功能
+            }
+        }
+
+        // --- 实际请求 ---
+        const { content, contentType, responseHeaders } = await fetchContentWithType(targetUrl);
+
+        // --- 写入缓存 (KV) ---
+        if (kvNamespace) {
+             try {
+                 const headersToCache = {};
+                 responseHeaders.forEach((value, key) => { headersToCache[key.toLowerCase()] = value; });
+                 const cacheValue = { body: content, headers: JSON.stringify(headersToCache) };
+                 // 注意 KV 写入限制
+                 waitUntil(kvNamespace.put(cacheKey, JSON.stringify(cacheValue), { expirationTtl: CACHE_TTL }));
+                 logDebug(`已将原始内容写入缓存: ${targetUrl}`);
+            } catch (kvError) {
+                 logDebug(`向 KV 写入缓存失败 (${cacheKey}): ${kvError.message}`);
+                 // 写入失败不影响返回结果
+            }
+        }
+
+        // --- 处理响应 ---
+        if (isM3u8Content(content, contentType)) {
+            logDebug(`内容是 M3U8，开始处理: ${targetUrl}`);
+            const processedM3u8 = await processM3u8Content(targetUrl, content, 0, env);
+            return createM3u8Response(processedM3u8);
+        } else {
+            logDebug(`内容不是 M3U8 (类型: ${contentType})，直接返回: ${targetUrl}`);
+            const finalHeaders = new Headers(responseHeaders);
+            finalHeaders.set('Cache-Control', `public, max-age=${CACHE_TTL}`);
+            // 添加 CORS 头，确保非 M3U8 内容也能跨域访问（例如图片、字幕文件等）
+            finalHeaders.set("Access-Control-Allow-Origin", "*");
+            finalHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
+            finalHeaders.set("Access-Control-Allow-Headers", "*");
+            return createResponse(content, 200, finalHeaders);
+        }
+
+    } catch (error) {
+        logDebug(`处理代理请求时发生严重错误: ${error.message} \n ${error.stack}`);
+        return createResponse(`代理处理错误: ${error.message}`, 500);
+    }
+}
+
+// 处理 OPTIONS 预检请求的函数
+export async function onOptions(context) {
+    // 直接返回允许跨域的头信息
+    return new Response(null, {
+        status: 204, // No Content
+        headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*", // 允许所有请求头
+            "Access-Control-Max-Age": "86400", // 预检请求结果缓存一天
+        },
     });
 }
-
-// 添加标签
-function addTag(tag) {
-    // 安全处理标签名，防止XSS
-    const safeTag = tag
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-    
-    // 确定当前使用的是电影还是电视剧标签
-    const isMovie = doubanMovieTvCurrentSwitch === 'movie';
-    const currentTags = isMovie ? movieTags : tvTags;
-    
-    // 检查是否已存在（忽略大小写）
-    const exists = currentTags.some(
-        existingTag => existingTag.toLowerCase() === safeTag.toLowerCase()
-    );
-    
-    if (exists) {
-        showToast('标签已存在', 'warning');
-        return;
-    }
-    
-    // 添加到对应的标签数组
-    if (isMovie) {
-        movieTags.push(safeTag);
-    } else {
-        tvTags.push(safeTag);
-    }
-    
-    // 保存到本地存储
-    saveUserTags();
-    
-    // 重新渲染标签
-    renderDoubanTags();
-    
-    showToast('标签添加成功', 'success');
-}
-
-// 删除标签
-function deleteTag(tag) {
-    // 热门标签不能删除
-    if (tag === '热门') {
-        showToast('热门标签不能删除', 'warning');
-        return;
-    }
-    
-    // 确定当前使用的是电影还是电视剧标签
-    const isMovie = doubanMovieTvCurrentSwitch === 'movie';
-    const currentTags = isMovie ? movieTags : tvTags;
-    
-    // 寻找标签索引
-    const index = currentTags.indexOf(tag);
-    
-    // 如果找到标签，则删除
-    if (index !== -1) {
-        currentTags.splice(index, 1);
-        
-        // 保存到本地存储
-        saveUserTags();
-        
-        // 如果当前选中的是被删除的标签，则重置为"热门"
-        if (doubanCurrentTag === tag) {
-            doubanCurrentTag = '热门';
-            doubanPageStart = 0;
-            renderRecommend(doubanCurrentTag, doubanPageSize, doubanPageStart);
-        }
-        
-        // 重新渲染标签
-        renderDoubanTags();
-        
-        showToast('标签删除成功', 'success');
-    }
-}
-
-// 重置为默认标签
-function resetTagsToDefault() {
-    // 确定当前使用的是电影还是电视剧
-    const isMovie = doubanMovieTvCurrentSwitch === 'movie';
-    
-    // 重置为默认标签
-    if (isMovie) {
-        movieTags = [...defaultMovieTags];
-    } else {
-        tvTags = [...defaultTvTags];
-    }
-    
-    // 设置当前标签为热门
-    doubanCurrentTag = '热门';
-    doubanPageStart = 0;
-    
-    // 保存到本地存储
-    saveUserTags();
-    
-    // 重新渲染标签和内容
-    renderDoubanTags();
-    renderRecommend(doubanCurrentTag, doubanPageSize, doubanPageStart);
-    
-    showToast('已恢复默认标签', 'success');
-}
-

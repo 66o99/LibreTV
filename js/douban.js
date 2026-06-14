@@ -52,8 +52,6 @@ let doubanMovieTvCurrentSwitch = 'movie';
 let doubanCurrentTag = '热门';
 let doubanPageStart = 0;
 const doubanPageSize = 16; // 一次显示的项目数量
-const DOUBAN_API_BASE = 'https://movie.douban.com';
-const DOUBAN_DEFAULT_COVER = 'assets/img/default-cover.png';
 
 // 初始化豆瓣功能
 function initDouban() {
@@ -425,11 +423,13 @@ function renderRecommend(tag, pageLimit, pageStart) {
     container.classList.add("relative");
     container.insertAdjacentHTML('beforeend', loadingOverlayHTML);
     
-    const target = getDoubanSubjectUrl(doubanMovieTvCurrentSwitch, tag, pageLimit, pageStart);
+    const target = `https://movie.douban.com/j/search_subjects?type=${doubanMovieTvCurrentSwitch}&tag=${tag}&sort=recommend&page_limit=${pageLimit}&page_start=${pageStart}`;
     
     // 使用通用请求函数
     fetchDoubanData(target)
-        .then(data => renderDoubanCards(data, container))
+        .then(data => {
+            renderDoubanCards(data, container);
+        })
         .catch(error => {
             console.error("获取豆瓣数据失败：", error);
             container.innerHTML = `
@@ -442,139 +442,64 @@ function renderRecommend(tag, pageLimit, pageStart) {
 }
 
 async function fetchDoubanData(url) {
-    const requestUrls = await buildDoubanRequestUrls(url);
-    let lastError = null;
-
-    for (const requestUrl of requestUrls) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 12000);
-
-        try {
-            const response = await fetch(requestUrl, {
-                signal: controller.signal,
-                headers: {
-                    'Accept': 'application/json, text/plain, */*'
-                }
-            });
-            clearTimeout(timeoutId);
-
-            if (!response.ok) {
-                throw new Error(`HTTP error! Status: ${response.status}`);
-            }
-
-            const contentType = response.headers.get('content-type') || '';
-            if (contentType.includes('application/json')) {
-                const json = await response.json();
-                return normalizeDoubanResponse(json);
-            }
-
-            return parseDoubanResponseText(await response.text());
-        } catch (error) {
-            clearTimeout(timeoutId);
-            lastError = error;
-            console.warn('Douban request failed, trying next endpoint:', requestUrl, error);
+    // 添加超时控制
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
+    
+    // 设置请求选项，包括信号和头部
+    const fetchOptions = {
+        signal: controller.signal,
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Referer': 'https://movie.douban.com/',
+            'Accept': 'application/json, text/plain, */*',
         }
-    }
-
-    throw lastError || new Error('All Douban request endpoints failed');
-}
-
-async function buildDoubanRequestUrls(url) {
-    const urls = [];
-
-    if (typeof PROXY_URL !== 'undefined' && PROXY_URL) {
-        const proxyUrl = PROXY_URL + encodeURIComponent(url);
-        if (typeof window.ProxyAuth?.addAuthToProxyUrl === 'function') {
-            urls.push(await window.ProxyAuth.addAuthToProxyUrl(proxyUrl));
-        } else {
-            urls.push(proxyUrl);
-        }
-    }
-
-    if (urls.length === 0) {
-        urls.push(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
-        urls.push(`https://corsproxy.io/?${encodeURIComponent(url)}`);
-        urls.push(url);
-    }
-
-    return [...new Set(urls)];
-}
-
-function normalizeDoubanResponse(data) {
-    if (data && typeof data.contents === 'string') {
-        return parseDoubanResponseText(data.contents);
-    }
-    return data;
-}
-
-function parseDoubanResponseText(text) {
-    if (!text) {
-        throw new Error('Empty Douban response');
-    }
-
-    const trimmed = text.trim();
-    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-        return normalizeDoubanResponse(JSON.parse(trimmed));
-    }
-
-    throw new Error('Unable to parse Douban response');
-}
-
-function getDoubanSubjectUrl(type, tag, pageLimit, pageStart) {
-    const params = new URLSearchParams({
-        type,
-        tag,
-        sort: 'recommend',
-        page_limit: String(pageLimit),
-        page_start: String(pageStart)
-    });
-    return `${DOUBAN_API_BASE}/j/search_subjects?${params.toString()}`;
-}
-
-function getDoubanImageNodes(url) {
-    if (!url) {
-        return {
-            primary: DOUBAN_DEFAULT_COVER,
-            fallback: DOUBAN_DEFAULT_COVER,
-            finalFallback: DOUBAN_DEFAULT_COVER
-        };
-    }
-
-    const normalizedUrl = url.replace(/\\/g, '');
-    const baiduUrl = `https://image.baidu.com/search/down?url=${encodeURIComponent(normalizedUrl)}`;
-    const proxiedUrl = typeof PROXY_URL !== 'undefined' && PROXY_URL ?
-        PROXY_URL + encodeURIComponent(normalizedUrl) :
-        baiduUrl;
-
-    return {
-        primary: proxiedUrl,
-        fallback: baiduUrl,
-        finalFallback: normalizedUrl
     };
+
+    try {
+        // 添加鉴权参数到代理URL
+        const proxiedUrl = await window.ProxyAuth?.addAuthToProxyUrl ? 
+            await window.ProxyAuth.addAuthToProxyUrl(PROXY_URL + encodeURIComponent(url)) :
+            PROXY_URL + encodeURIComponent(url);
+            
+        // 尝试直接访问（豆瓣API可能允许部分CORS请求）
+        const response = await fetch(proxiedUrl, fetchOptions);
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        
+        return await response.json();
+    } catch (err) {
+        console.error("豆瓣 API 请求失败（直接代理）：", err);
+        
+        // 失败后尝试备用方法：作为备选
+        const fallbackUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+        
+        try {
+            const fallbackResponse = await fetch(fallbackUrl);
+            
+            if (!fallbackResponse.ok) {
+                throw new Error(`备用API请求失败! 状态: ${fallbackResponse.status}`);
+            }
+            
+            const data = await fallbackResponse.json();
+            
+            // 解析原始内容
+            if (data && data.contents) {
+                return JSON.parse(data.contents);
+            } else {
+                throw new Error("无法获取有效数据");
+            }
+        } catch (fallbackErr) {
+            console.error("豆瓣 API 备用请求也失败：", fallbackErr);
+            throw fallbackErr; // 向上抛出错误，让调用者处理
+        }
+    }
 }
 
-function handleDoubanImageError(img) {
-    const fallback = img.dataset.fallback;
-    const finalFallback = img.dataset.finalFallback;
-
-    if (!img.dataset.retryStage && fallback && img.src !== fallback) {
-        img.dataset.retryStage = 'fallback';
-        img.src = fallback;
-        return;
-    }
-
-    if (img.dataset.retryStage === 'fallback' && finalFallback && img.src !== finalFallback) {
-        img.dataset.retryStage = 'direct';
-        img.src = finalFallback;
-        return;
-    }
-
-    img.onerror = null;
-    img.src = DOUBAN_DEFAULT_COVER;
-    img.classList.add('object-contain');
-}
-
-
+// 抽取渲染豆瓣卡片的逻辑到单独函数
 function renderDoubanCards(data, container) {
     // 创建文档片段以提高性能
     const fragment = document.createDocumentFragment();
@@ -589,7 +514,7 @@ function renderDoubanCards(data, container) {
         fragment.appendChild(emptyEl);
     } else {
         // 循环创建每个影视卡片
-        for (const item of data.subjects) {
+        data.subjects.forEach(item => {
             const card = document.createElement("div");
             card.className = "bg-[#111] hover:bg-[#222] transition-all duration-300 rounded-lg overflow-hidden flex flex-col transform hover:scale-105 shadow-md hover:shadow-lg";
             
@@ -608,16 +533,14 @@ function renderDoubanCards(data, container) {
             const originalCoverUrl = item.cover;
             
             // 2. 也准备代理URL作为备选
-            const imageNodes = getDoubanImageNodes(originalCoverUrl);
+            const proxiedCoverUrl = PROXY_URL + encodeURIComponent(originalCoverUrl);
             
             // 为不同设备优化卡片布局
             card.innerHTML = `
                 <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" onclick="fillAndSearchWithDouban('${safeTitle}')">
-                    <img src="${imageNodes.primary}" alt="${safeTitle}" 
+                    <img src="${originalCoverUrl}" alt="${safeTitle}" 
                         class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
-                        data-fallback="${imageNodes.fallback}"
-                        data-final-fallback="${imageNodes.finalFallback}"
-                        onerror="handleDoubanImageError(this)"
+                        onerror="this.onerror=null; this.src='${proxiedCoverUrl}'; this.classList.add('object-contain');"
                         loading="lazy" referrerpolicy="no-referrer">
                     <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent opacity-60"></div>
                     <div class="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm">
@@ -639,7 +562,7 @@ function renderDoubanCards(data, container) {
             `;
             
             fragment.appendChild(card);
-        }
+        });
     }
     
     // 清空并添加所有新元素
@@ -868,4 +791,3 @@ function resetTagsToDefault() {
     
     showToast('已恢复默认标签', 'success');
 }
-

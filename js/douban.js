@@ -1,4 +1,4 @@
-﻿// 豆瓣热门电影电视剧推荐功能
+// 豆瓣热门电影电视剧推荐功能
 
 // 豆瓣标签列表 - 修改为默认标签
 let defaultMovieTags = ['热门', '最新', '经典', '豆瓣高分', '冷门佳片', '华语', '欧美', '韩国', '日本', '动作', '喜剧', '日综', '爱情', '科幻', '悬疑', '恐怖', '治愈'];
@@ -429,9 +429,7 @@ function renderRecommend(tag, pageLimit, pageStart) {
     
     // 使用通用请求函数
     fetchDoubanData(target)
-        .then(data => {
-            renderDoubanCards(data, container);
-        })
+        .then(data => renderDoubanCards(data, container))
         .catch(error => {
             console.error("获取豆瓣数据失败：", error);
             container.innerHTML = `
@@ -533,7 +531,7 @@ function getDoubanSubjectUrl(type, tag, pageLimit, pageStart) {
     return `${DOUBAN_API_BASE}/j/search_subjects?${params.toString()}`;
 }
 
-function getDoubanImageNodes(url) {
+async function getDoubanImageNodes(url) {
     if (!url) {
         return {
             primary: DOUBAN_DEFAULT_COVER,
@@ -543,14 +541,25 @@ function getDoubanImageNodes(url) {
     }
 
     const normalizedUrl = url.replace(/\\/g, '');
-    const proxiedUrl = typeof PROXY_URL !== 'undefined' && PROXY_URL ?
-        PROXY_URL + encodeURIComponent(normalizedUrl) :
-        normalizedUrl;
+    const baiduUrl = `https://image.baidu.com/search/down?url=${encodeURIComponent(normalizedUrl)}`;
+
+    if (typeof PROXY_URL !== 'undefined' && PROXY_URL) {
+        const proxyUrl = PROXY_URL + encodeURIComponent(normalizedUrl);
+        const authenticatedProxyUrl = typeof window.ProxyAuth?.addAuthToProxyUrl === 'function' ?
+            await window.ProxyAuth.addAuthToProxyUrl(proxyUrl) :
+            proxyUrl;
+
+        return {
+            primary: authenticatedProxyUrl,
+            fallback: baiduUrl,
+            finalFallback: normalizedUrl
+        };
+    }
 
     return {
-        primary: `https://image.baidu.com/search/down?url=${encodeURIComponent(normalizedUrl)}`,
-        fallback: proxiedUrl,
-        finalFallback: normalizedUrl
+        primary: baiduUrl,
+        fallback: normalizedUrl,
+        finalFallback: DOUBAN_DEFAULT_COVER
     };
 }
 
@@ -576,7 +585,7 @@ function handleDoubanImageError(img) {
 }
 
 
-function renderDoubanCards(data, container) {
+async function renderDoubanCards(data, container) {
     // 创建文档片段以提高性能
     const fragment = document.createDocumentFragment();
     
@@ -590,7 +599,7 @@ function renderDoubanCards(data, container) {
         fragment.appendChild(emptyEl);
     } else {
         // 循环创建每个影视卡片
-        data.subjects.forEach(item => {
+        for (const item of data.subjects) {
             const card = document.createElement("div");
             card.className = "bg-[#111] hover:bg-[#222] transition-all duration-300 rounded-lg overflow-hidden flex flex-col transform hover:scale-105 shadow-md hover:shadow-lg";
             
@@ -609,7 +618,7 @@ function renderDoubanCards(data, container) {
             const originalCoverUrl = item.cover;
             
             // 2. 也准备代理URL作为备选
-            const imageNodes = getDoubanImageNodes(originalCoverUrl);
+            const imageNodes = await getDoubanImageNodes(originalCoverUrl);
             
             // 为不同设备优化卡片布局
             card.innerHTML = `
@@ -640,7 +649,7 @@ function renderDoubanCards(data, container) {
             `;
             
             fragment.appendChild(card);
-        });
+        }
     }
     
     // 清空并添加所有新元素

@@ -533,15 +533,48 @@ function getDoubanSubjectUrl(type, tag, pageLimit, pageStart) {
     return `${DOUBAN_API_BASE}/j/search_subjects?${params.toString()}`;
 }
 
-function getProxiedDoubanImageUrl(url) {
-    if (!url) return DOUBAN_DEFAULT_COVER;
-
-    if (typeof PROXY_URL !== 'undefined' && PROXY_URL) {
-        return PROXY_URL + encodeURIComponent(url);
+function getDoubanImageNodes(url) {
+    if (!url) {
+        return {
+            primary: DOUBAN_DEFAULT_COVER,
+            fallback: DOUBAN_DEFAULT_COVER,
+            finalFallback: DOUBAN_DEFAULT_COVER
+        };
     }
 
-    return `https://images.weserv.nl/?url=${encodeURIComponent(url.replace(/^https?:\/\//, ''))}&default=${encodeURIComponent(DOUBAN_DEFAULT_COVER)}`;
+    const normalizedUrl = url.replace(/\\/g, '');
+    const proxiedUrl = typeof PROXY_URL !== 'undefined' && PROXY_URL ?
+        PROXY_URL + encodeURIComponent(normalizedUrl) :
+        normalizedUrl;
+
+    return {
+        primary: `https://image.baidu.com/search/down?url=${encodeURIComponent(normalizedUrl)}`,
+        fallback: proxiedUrl,
+        finalFallback: normalizedUrl
+    };
 }
+
+function handleDoubanImageError(img) {
+    const fallback = img.dataset.fallback;
+    const finalFallback = img.dataset.finalFallback;
+
+    if (!img.dataset.retryStage && fallback && img.src !== fallback) {
+        img.dataset.retryStage = 'fallback';
+        img.src = fallback;
+        return;
+    }
+
+    if (img.dataset.retryStage === 'fallback' && finalFallback && img.src !== finalFallback) {
+        img.dataset.retryStage = 'direct';
+        img.src = finalFallback;
+        return;
+    }
+
+    img.onerror = null;
+    img.src = DOUBAN_DEFAULT_COVER;
+    img.classList.add('object-contain');
+}
+
 
 function renderDoubanCards(data, container) {
     // 创建文档片段以提高性能
@@ -576,14 +609,16 @@ function renderDoubanCards(data, container) {
             const originalCoverUrl = item.cover;
             
             // 2. 也准备代理URL作为备选
-            const proxiedCoverUrl = getProxiedDoubanImageUrl(originalCoverUrl);
+            const imageNodes = getDoubanImageNodes(originalCoverUrl);
             
             // 为不同设备优化卡片布局
             card.innerHTML = `
                 <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" onclick="fillAndSearchWithDouban('${safeTitle}')">
-                    <img src="${originalCoverUrl}" alt="${safeTitle}" 
+                    <img src="${imageNodes.primary}" alt="${safeTitle}" 
                         class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
-                        onerror="this.onerror=null; this.src='${proxiedCoverUrl}'; this.classList.add('object-contain');"
+                        data-fallback="${imageNodes.fallback}"
+                        data-final-fallback="${imageNodes.finalFallback}"
+                        onerror="handleDoubanImageError(this)"
                         loading="lazy" referrerpolicy="no-referrer">
                     <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent opacity-60"></div>
                     <div class="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm">

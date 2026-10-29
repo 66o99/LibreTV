@@ -198,32 +198,33 @@ async function fillAndSearchWithDouban(title) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
     
-    // 确保豆瓣资源API被选中
-    if (typeof selectedAPIs !== 'undefined' && !selectedAPIs.includes('dbzy')) {
-        // 在设置中勾选豆瓣资源API复选框
-        const doubanCheckbox = document.querySelector('input[id="api_dbzy"]');
-        if (doubanCheckbox) {
-            doubanCheckbox.checked = true;
-            
-            // 触发updateSelectedAPIs函数以更新状态
-            if (typeof updateSelectedAPIs === 'function') {
-                updateSelectedAPIs();
-            } else {
-                // 如果函数不可用，则手动添加到selectedAPIs
-                selectedAPIs.push('dbzy');
-                localStorage.setItem('selectedAPIs', JSON.stringify(selectedAPIs));
-                
-                // 更新选中API计数（如果有这个元素）
-                const countEl = document.getElementById('selectedAPICount');
-                if (countEl) {
-                    countEl.textContent = selectedAPIs.length;
-                }
+    // dbzy（豆瓣资源）上游已关闭“关键词搜索”（返回 code 1002 forbids keyword search），
+    // 点海报若只勾它会零结果→“获取详情失败”。这里确保除 dbzy 外至少有一个可用源参与。
+    try {
+        if (typeof selectedAPIs !== 'undefined') {
+            let usable = selectedAPIs.filter(id => id !== 'dbzy');
+            if (usable.length === 0) {
+                // 关键词搜索稳定的回退源（按可用性排序）
+                usable = ['ruyi', 'bfzy', 'jisu', 'tyyszy'].filter(id =>
+                    typeof API_SITES !== 'undefined' && API_SITES[id]);
             }
-            
-            showToast('已自动选择豆瓣资源API', 'info');
+            if (usable.length > 0) {
+                // 直接更新搜索实际读取的 selectedAPIs 数组并持久化
+                selectedAPIs = usable.slice();
+                localStorage.setItem('selectedAPIs', JSON.stringify(selectedAPIs));
+                // 同步设置弹窗里的复选框
+                usable.forEach(id => {
+                    const box = document.querySelector('input[id="api_' + id + '"]');
+                    if (box) box.checked = true;
+                });
+                const dbBox = document.querySelector('input[id="api_dbzy"]');
+                if (dbBox) dbBox.checked = false;
+            }
         }
+    } catch (e) {
+        console.warn('调整搜索源失败：', e);
     }
-    
+
     // 填充搜索框并执行搜索
     const input = document.getElementById('searchInput');
     if (input) {

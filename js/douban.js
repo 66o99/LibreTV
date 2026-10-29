@@ -434,8 +434,11 @@ function renderRecommend(tag, pageLimit, pageStart) {
             console.error("获取豆瓣数据失败：", error);
             container.innerHTML = `
                 <div class="col-span-full text-center py-8">
-                    <div class="text-red-400">❌ 获取豆瓣数据失败，请稍后重试</div>
-                    <div class="text-gray-500 text-sm mt-2">提示：使用VPN可能有助于解决此问题</div>
+                    <div class="text-red-400">❌ 获取豆瓣数据失败，可能是网络不稳定或豆瓣临时限制</div>
+                    <div class="text-gray-500 text-sm mt-2">请稍等片刻后点击下方按钮重试</div>
+                    <button onclick="renderRecommend('${doubanCurrentTag}', ${doubanPageSize}, ${doubanPageStart})"
+                            class="mt-4 px-5 py-2 text-sm text-white rounded-lg"
+                            style="background-color:#db2777;">重试</button>
                 </div>
             `;
         });
@@ -499,6 +502,45 @@ async function fetchDoubanData(url) {
     }
 }
 
+// 海报多级加载：电视为国内网络，直连豆瓣图床慢/易失败，
+// 因此【优先走本站图片代理 /imgproxy/】（由服务端带 Referer 拉图），
+// 直连豆瓣仅作为代理失败时的兜底，最后退到占位图。
+window.__doubanImgFallback = window.__doubanImgFallback || {};
+
+window.doubanPosterRetry = function (img, stage) {
+    if (!img) return;
+    img.onerror = null;
+
+    var cover = img.getAttribute('data-cover');
+    if (!cover) return;
+
+    var rec = window.__doubanImgFallback[cover] || { n: (typeof stage === 'number' ? stage : 0) };
+    if (typeof stage === 'number') rec.n = stage;
+    window.__doubanImgFallback[cover] = rec;
+
+    var svgPh = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="180" height="270"><rect width="100%" height="100%" fill="#151515"/><text x="50%" y="50%" fill="#555" font-size="16" text-anchor="middle" font-family="sans-serif">暂无图片</text></svg>'
+    );
+
+    var next;
+    if (rec.n === 0) {
+        next = '/imgproxy/' + encodeURIComponent(cover) + '?t=' + Date.now();
+    } else if (rec.n === 1) {
+        next = cover + (cover.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now();
+    } else if (rec.n === 2) {
+        next = '/imgproxy/' + encodeURIComponent(cover) + '?t=' + (Date.now() + 1);
+    } else {
+        img.onerror = function () { this.onerror = null; this.src = svgPh; };
+        img.src = 'image/nomedia.png';
+        img.classList.add('object-contain');
+        return;
+    }
+
+    rec.n++;
+    img.onerror = function () { window.doubanPosterRetry(this); };
+    img.src = next;
+};
+
 // 抽取渲染豆瓣卡片的逻辑到单独函数
 function renderDoubanCards(data, container) {
     // 创建文档片段以提高性能
@@ -531,22 +573,19 @@ function renderDoubanCards(data, container) {
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;');
             
-            // 处理图片URL
-            // 豆瓣图床防盗链：无 Referer 返回 418，带任意 Referer 即返回 200。
-            // 页面全局 meta 是 no-referrer，因此海报单独发本站 origin 作为 Referer。
+            // 国内电视网络直连豆瓣图床慢/易失败，首图直接走本站代理；
+            // 失败由 doubanPosterRetry 多级兜底（代理→直连→再代理→占位图）。
             const originalCoverUrl = item.cover;
-
-            // 服务端图片代理（带豆瓣 Referer 拉取），作为直连失败时的兜底
             const proxiedCoverUrl = '/imgproxy/' + encodeURIComponent(originalCoverUrl);
-            
+
             // 为不同设备优化卡片布局
             card.innerHTML = `
-                <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" onclick="fillAndSearchWithDouban('${safeTitle}')">
-                    <img src="${originalCoverUrl}" alt="${safeTitle}" 
+                <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" style="background-color:#151515;" onclick="fillAndSearchWithDouban('${safeTitle}')">
+                    <img src="${proxiedCoverUrl}" alt="${safeTitle}"
+                        data-cover="${originalCoverUrl}"
                         class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
-                        onerror="this.onerror=null; this.src='${proxiedCoverUrl}'; this.classList.add('object-contain');"
-                        loading="lazy" referrerpolicy="origin"
-                        data-nomedia="image/nomedia.png">
+                        onerror="window.doubanPosterRetry && window.doubanPosterRetry(this, 1)"
+                        loading="lazy" decoding="async" referrerpolicy="origin">
                     <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent opacity-60"></div>
                     <div class="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm">
                         <span class="text-yellow-400">★</span> ${safeRate}

@@ -517,6 +517,9 @@ function renderDoubanCards(data, container) {
         data.subjects.forEach(item => {
             const card = document.createElement("div");
             card.className = "bg-[#111] hover:bg-[#222] transition-all duration-300 rounded-lg overflow-hidden flex flex-col transform hover:scale-105 shadow-md hover:shadow-lg";
+            // 电视老旧内核对 Tailwind 运行时 JIT 任意值类(bg-[#111])支持不佳，
+            // 用内联样式写死深色卡片背景，确保标题区不是灰底
+            card.style.backgroundColor = "#111111";
             
             // 生成卡片内容，确保安全显示（防止XSS）
             const safeTitle = item.title
@@ -554,9 +557,10 @@ function renderDoubanCards(data, container) {
                         </a>
                     </div>
                 </div>
-                <div class="p-2 text-center bg-[#111]">
+                <div class="p-2 text-center" style="background-color:#111111;">
                     <button onclick="fillAndSearchWithDouban('${safeTitle}')" 
                             class="text-sm font-medium text-white truncate w-full hover:text-pink-400 transition"
+                            style="color:#ffffff;background:transparent;"
                             title="${safeTitle}">
                         ${safeTitle}
                     </button>

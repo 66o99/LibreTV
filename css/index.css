@@ -207,3 +207,123 @@
         grid-template-columns: repeat(4, 1fr);
     }
 }
+
+/* ============================================================
+   电视/老旧内核浏览器兼容兜底
+   这些设备上 Tailwind CDN 的运行时 JIT（颜色类、bg-[#xxx] 任意值类）
+   经常无法编译，导致按钮/标签/卡片标题区掉成默认灰白。
+   以下用普通静态 CSS 按实际存在的类名/ID 强制配色，不依赖 Tailwind。
+   ============================================================ */
+
+/* 页面基础：防止 body 文字/背景在 Tailwind 失效时变成白底黑字 */
+body.page-bg {
+    background-color: #0a0a0a;
+    color: #ffffff;
+}
+
+/* ---- 电影/电视剧 切换开关 ---- */
+.douban-switch {
+    display: inline-flex;
+    align-items: center;
+    background-color: #222222; /* 兜底 bg-[#222] */
+    border-radius: 9999px;
+    padding: 0.25rem;
+}
+
+.douban-switch button {
+    padding: 0.25rem 0.75rem;
+    font-size: 0.875rem;
+    border: 0;
+    border-radius: 9999px;
+    cursor: pointer;
+    /* 未选中态：深灰底 + 浅灰字（电视上原来掉成白底白字看不见） */
+    background-color: #222222;
+    color: #d1d5db;
+}
+
+.douban-switch button:hover {
+    color: #ffffff;
+}
+
+/* 选中态：JS 会给当前按钮加 bg-pink-600 / text-white */
+.douban-switch button.bg-pink-600,
+.douban-switch button.text-white.bg-pink-600 {
+    background-color: #db2777 !important;
+    color: #ffffff !important;
+}
+
+/* ---- “换一批”按钮 ---- */
+#douban-refresh {
+    background-color: #db2777;
+    color: #ffffff;
+    border: 0;
+    border-radius: 0.5rem;
+}
+
+#douban-refresh:hover {
+    background-color: #be185d;
+}
+
+/* ---- 豆瓣分类标签（JS 动态生成）----
+   默认标签带 bg-[#1a1a1a] text-gray-300 border-[#333]；
+   选中标签带 bg-pink-600 text-white border-white。
+   这里给动态按钮兜底，保证电视上也是深底浅字、选中粉色。 */
+#douban-tags button {
+    background-color: #1a1a1a;
+    color: #d1d5db;
+    border: 1px solid #333333;
+    border-radius: 0.25rem;
+}
+
+#douban-tags button:hover {
+    background-color: #be185d;
+    color: #ffffff;
+    border-color: #ffffff;
+}
+
+#douban-tags button.bg-pink-600 {
+    background-color: #db2777 !important;
+    color: #ffffff !important;
+    border-color: #ffffff !important;
+}
+
+/* ---- 豆瓣海报卡片及标题区 ---- */
+#douban-results > div {
+    background-color: #111111;
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+
+#douban-results > div:hover {
+    background-color: #222222;
+}
+
+/* 海报下方标题条：强制黑底白字，避免电视上显示成灰底/白底 */
+#douban-results > div > div:last-child {
+    background-color: #111111;
+    padding: 0.5rem;
+    text-align: center;
+}
+
+#douban-results > div > div:last-child button {
+    background: transparent;
+    border: 0;
+    width: 100%;
+    color: #ffffff;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#douban-results > div > div:last-child button:hover {
+    color: #f472b6;
+}
+
+/* ---- 顶部评分 / 豆瓣链接角标（兜底 bg-black/70）---- */
+#douban-results .absolute.bottom-2 {
+    background-color: rgba(0, 0, 0, 0.7);
+    color: #ffffff;
+}

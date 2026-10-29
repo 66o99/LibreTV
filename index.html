@@ -16,7 +16,21 @@
     
     <script src="libs/tailwindcss.min.js"></script>
     <link rel="stylesheet" href="css/styles.css">
-    <link rel="stylesheet" href="css/index.css">
+    <link rel="stylesheet" href="css/index.css?v=20261029a">
+    <style>
+    /* ==== 电视浏览器强制配色（内联，确保不依赖外部CSS加载）==== */
+    body.page-bg{background-color:#0a0a0a!important;color:#fff!important;}
+    .douban-switch{display:inline-flex!important;align-items:center;background:#222!important;border-radius:9999px;padding:4px;}
+    .douban-switch button{padding:4px 12px!important;font-size:14px;border:0;border-radius:9999px;cursor:pointer;background:#222!important;color:#d1d5db!important;}
+    .douban-switch button.bg-pink-600{background:#db2777!important;color:#fff!important;}
+    #douban-refresh{background:#db2777!important;color:#fff!important;border:0;border-radius:8px;}
+    #douban-tags button{background:#1a1a1a!important;color:#d1d5db!important;border:1px solid #333!important;border-radius:4px;}
+    #douban-tags button.bg-pink-600{background:#db2777!important;color:#fff!important;border-color:#fff!important;}
+    #douban-results>div{background:#111!important;border-radius:8px;overflow:hidden;}
+    #douban-results>div>div:last-child{background:#111!important;padding:8px;text-align:center;}
+    #douban-results>div>div:last-child button{background:0 0;border:0;width:100%;color:#fff!important;font-size:14px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    #douban-results .absolute.bottom-2{background:rgba(0,0,0,.7)!important;color:#fff;}
+    </style>
 </head>
 <body class="page-bg text-white">
     <!-- 将历史记录按钮移到左上角，并缩小尺寸 -->
@@ -419,7 +433,7 @@
     <script src="js/customer_site.js"></script>
     <script src="js/ui.js"></script>
     <script src="js/api.js"></script>
-    <script src="js/douban.js"></script>
+    <script src="js/douban.js?v=20261029a"></script>
     <script src="js/password.js"></script>
     <script src="js/search.js"></script>
     <script src="js/app.js"></script>

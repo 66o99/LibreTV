@@ -152,6 +152,50 @@ function validateProxyAuth(req) {
   return true;
 }
 
+// 豆瓣图片免鉴权代理（海报防盗链：无 Referer 时豆瓣图床返回 418）
+// 仅允许豆瓣图床域名，防止被用作开放代理/SSRF
+const DOUBAN_IMG_HOST_RE = /(^|\.)(doubanio\.com|douban\.com)$/i;
+app.get('/imgproxy/:encodedUrl', async (req, res) => {
+  let targetUrl;
+  try {
+    targetUrl = decodeURIComponent(req.params.encodedUrl);
+  } catch {
+    return res.status(400).send('无效的 URL');
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(targetUrl);
+  } catch {
+    return res.status(400).send('无效的 URL');
+  }
+  if (parsed.protocol !== 'https:' || !DOUBAN_IMG_HOST_RE.test(parsed.hostname)) {
+    return res.status(403).send('仅允许代理豆瓣图片');
+  }
+
+  try {
+    const response = await axios({
+      method: 'get',
+      url: targetUrl,
+      responseType: 'stream',
+      timeout: 10000,
+      headers: {
+        'User-Agent': config.userAgent,
+        // 关键：带豆瓣 Referer，图床才返回图片而不是 418
+        'Referer': 'https://movie.douban.com/',
+        'Accept': 'image/avif,image/webp,image/*,*/*'
+      }
+    });
+
+    res.setHeader('Content-Type', response.headers['content-type'] || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    response.data.pipe(res);
+  } catch (error) {
+    console.error('豆瓣图片代理错误:', error.message);
+    res.status(error.response?.status || 502).send('图片获取失败');
+  }
+});
+
 app.get('/proxy/:encodedUrl', async (req, res) => {
   try {
     // 验证鉴权
